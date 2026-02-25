@@ -1,4 +1,32 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Intraday Trading Platform
+
+Intraday trading intelligence platform with OI analytics, PCR, and signal generation. Built with Next.js, deployed on Vercel.
+
+## Phase 1: Infrastructure Setup
+
+### Quick Deploy (after one-time auth)
+
+```bash
+# 1. Login to Vercel (opens browser)
+vercel login
+
+# 2. Deploy to production
+vercel deploy --prod --yes
+```
+
+### GitHub + Vercel (full setup)
+
+```bash
+./scripts/phase1-setup.sh
+```
+
+Or manually:
+1. Create repo at [github.com/new?name=intraday-trading-platform](https://github.com/new?name=intraday-trading-platform)
+2. `git remote add origin https://github.com/YOUR_USERNAME/intraday-trading-platform.git`
+3. `git push -u origin main`
+4. Connect repo at [vercel.com/new](https://vercel.com/new) and deploy
+
+---
 
 ## Getting Started
 
