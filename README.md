@@ -28,6 +28,30 @@ Or manually:
 
 ---
 
+## Auto Deploy (Code Change → Vercel)
+
+```bash
+npm install          # one-time: installs chokidar, concurrently
+npm run dev:auto     # runs dev server + auto-sync
+```
+
+Any file change → auto commit → push → Vercel deploys. See [docs/AUTO_DEPLOY.md](docs/AUTO_DEPLOY.md).
+
+---
+
+## Angel One SmartAPI
+
+To use Angel One as the primary data source (PCR, OI buildup):
+
+1. Create an app at [smartapi.angelbroking.com](https://smartapi.angelbroking.com) (Trading APIs)
+2. Copy `.env.example` to `.env.local` and add your API key, client ID, and PIN
+3. Run the app and go to **/login** to enter your TOTP (6-digit from authenticator)
+4. Session is valid until midnight IST; re-login each trading day
+
+See [docs/ANGEL_ONE_SETUP.md](docs/ANGEL_ONE_SETUP.md) for the full guide.
+
+---
+
 ## Getting Started
 
 First, run the development server:

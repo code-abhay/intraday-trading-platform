@@ -4,6 +4,8 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "auto-sync": "node scripts/auto-sync.js",
+    "dev:auto": "concurrently \"npm run dev\" \"npm run auto-sync\"",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
@@ -14,9 +16,11 @@
     "react-dom": "19.2.3"
   },
   "devDependencies": {
+    "chokidar": "^4.0.1",
+    "concurrently": "^9.1.0",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
-    "@types/react": "^19",
+    "@types/react": "19.2.14",
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.1.6",
