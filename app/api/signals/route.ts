@@ -2,17 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import {
   computePCR,
   computeMaxPain,
+  computeOIBuildup,
   generateSignal,
   generateSignalFromPCR,
   type StrategySignal,
 } from "@/lib/strategy";
 import type { OptionChainRow } from "@/app/api/option-chain/route";
-import {
-  angelOneGetPCR,
-  angelOneGetLTP,
-  NIFTY_INDEX_TOKEN,
-  NIFTY_INDEX_SYMBOL,
-} from "@/lib/angel-one";
+import { angelOneGetPCR, angelOneGetLTP } from "@/lib/angel-one";
+import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
 
 const JWT_COOKIE = "angel_jwt";
 
@@ -82,10 +79,13 @@ async function fetchNseOptionChain(
   return records;
 }
 
-async function getSignalsFromNSE(symbol: string) {
+async function getSignalsFromNSE(nseSymbol: string) {
   const cookies = await getNseCookies();
-  const records = await fetchNseOptionChain(cookies, symbol);
+  const records = await fetchNseOptionChain(cookies, nseSymbol);
   const { data, underlyingValue } = records;
+
+  const segment = SEGMENTS.find((s) => s.nseSymbol === nseSymbol);
+  const strikeStep = segment?.strikeStep ?? 50;
 
   const pcr = computePCR(data);
   const maxPainResults = computeMaxPain(data, underlyingValue);
@@ -94,15 +94,24 @@ async function getSignalsFromNSE(symbol: string) {
   const signal: StrategySignal = generateSignal(
     pcr,
     maxPainStrike,
-    underlyingValue
+    underlyingValue,
+    { strikeStep }
   );
+
+  const oiBuildup = computeOIBuildup(data, underlyingValue);
+  const oiTable = oiBuildup.map((r) => ({
+    strike: r.strikePrice,
+    ceOI: r.callOI,
+    peOI: r.putOI,
+  }));
 
   return {
     source: "nse" as const,
-    symbol,
+    symbol: nseSymbol,
     underlyingValue,
     signal,
     maxPain: maxPainResults.slice(0, 5),
+    oiTable,
     timestamp: new Date().toISOString(),
   };
 }
@@ -112,15 +121,15 @@ async function getSignalsFromAngelOne(
   apiKey: string,
   symbol: string
 ) {
+  const segment = getSegment(symbol as SegmentId);
   const pcrList = await angelOneGetPCR(jwtToken, apiKey);
-  const niftyPCR = pcrList.find((p) => {
-    const sym = p.tradingSymbol?.toUpperCase() ?? "";
-    return sym.startsWith("NIFTY") && !sym.includes("BANK"); // Exclude BANKNIFTY
-  });
+  const pcrItem = pcrList.find((p) =>
+    segment.angelPCRFilter(p.tradingSymbol ?? "")
+  );
 
-  if (!niftyPCR) {
-    const symbols = pcrList.slice(0, 5).map((p) => p.tradingSymbol).join(", ");
-    throw new Error(`NIFTY not found in PCR data. Available: ${symbols || "none"}`);
+  if (!pcrItem) {
+    const symbols = pcrList.slice(0, 8).map((p) => p.tradingSymbol).join(", ");
+    throw new Error(`${segment.label} not found in PCR. Available: ${symbols || "none"}`);
   }
 
   let underlyingValue = 0;
@@ -128,19 +137,19 @@ async function getSignalsFromAngelOne(
     underlyingValue = await angelOneGetLTP(
       jwtToken,
       apiKey,
-      "NSE",
-      NIFTY_INDEX_TOKEN,
-      NIFTY_INDEX_SYMBOL
+      segment.exchange,
+      segment.angelToken,
+      segment.angelSymbol
     );
   } catch {
-    // Fallback: use placeholder if LTP fails
-    underlyingValue = 24500; // Approximate
+    underlyingValue = segment.fallbackLTP;
   }
 
   const signal = generateSignalFromPCR(
-    niftyPCR.pcr,
+    pcrItem.pcr,
     underlyingValue,
-    undefined
+    undefined,
+    { strikeStep: segment.strikeStep }
   );
 
   return {
@@ -148,13 +157,21 @@ async function getSignalsFromAngelOne(
     symbol,
     underlyingValue,
     signal,
-    maxPain: [{ strike: Math.round(underlyingValue / 50) * 50, totalPayout: 0 }], // Angel One doesn't provide option chain; show nearest strike
+    maxPain: [
+      {
+        strike: Math.round(underlyingValue / segment.strikeStep) * segment.strikeStep,
+        totalPayout: 0,
+      },
+    ],
+    oiTable: undefined,
     timestamp: new Date().toISOString(),
   };
 }
 
 export async function GET(request: NextRequest) {
-  const symbol = request.nextUrl.searchParams.get("symbol") || "NIFTY";
+  const symbolParam = request.nextUrl.searchParams.get("symbol") || "NIFTY";
+  const segment = SEGMENTS.find((s) => s.id === symbolParam) ?? SEGMENTS[0];
+  const symbol = segment.id;
 
   const apiKey = process.env.ANGEL_API_KEY;
   const jwtToken = request.cookies.get(JWT_COOKIE)?.value;
@@ -171,38 +188,37 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Fallback to NSE
-  try {
-    const data = await getSignalsFromNSE(symbol);
-    return NextResponse.json(data);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : "Unknown error";
-    console.error("[signals] Error:", message);
-
-    // Return demo data so dashboard layout is always visible
-    const demoData = {
-      source: "demo" as const,
-      symbol,
-      underlyingValue: 24500,
-      signal: {
-        bias: "NEUTRAL" as const,
-        entry: 24500,
-        stopLoss: 24450,
-        target: 24550,
-        confidence: 50,
-        pcr: { value: 1.0, bias: "NEUTRAL", callOI: 0, putOI: 0 },
-        maxPain: 24500,
-        summary: "Demo data — real data unavailable. Login during market hours (9:15 AM - 3:30 PM IST) for live signals.",
-      },
-      maxPain: [
-        { strike: 24400, totalPayout: 0 },
-        { strike: 24450, totalPayout: 0 },
-        { strike: 24500, totalPayout: 0 },
-        { strike: 24550, totalPayout: 0 },
-        { strike: 24600, totalPayout: 0 },
-      ],
-      timestamp: new Date().toISOString(),
-    };
-    return NextResponse.json(demoData);
+  // Fallback to NSE (only if segment has NSE option chain)
+  if (segment.nseSymbol) {
+    try {
+      const data = await getSignalsFromNSE(segment.nseSymbol);
+      return NextResponse.json({ ...data, symbol });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      console.error("[signals] NSE error:", message);
+    }
   }
+
+  // Demo data when both fail (or SENSEX which has no NSE option chain)
+  const uv = segment.fallbackLTP;
+  const step = segment.strikeStep;
+  const demoSignal = generateSignalFromPCR(1.0, uv, uv, {
+    strikeStep: step,
+  });
+  const demoData = {
+    source: "demo" as const,
+    symbol,
+    underlyingValue: uv,
+    signal: demoSignal,
+    maxPain: [
+      { strike: Math.round((uv - step * 2) / step) * step, totalPayout: 0 },
+      { strike: Math.round((uv - step) / step) * step, totalPayout: 0 },
+      { strike: Math.round(uv / step) * step, totalPayout: 0 },
+      { strike: Math.round((uv + step) / step) * step, totalPayout: 0 },
+      { strike: Math.round((uv + step * 2) / step) * step, totalPayout: 0 },
+    ],
+    oiTable: undefined as { strike: number; ceOI: number; peOI: number }[] | undefined,
+    timestamp: new Date().toISOString(),
+  };
+  return NextResponse.json(demoData);
 }
