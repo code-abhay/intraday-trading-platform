@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { SEGMENTS, type SegmentId } from "@/lib/segments";
+import { isMarketOpen, getMarketStatusMessage } from "@/lib/utils";
 import { AppHeader, SegmentSelector } from "@/components/app-header";
 import { StatCard } from "@/components/stat-card";
 import { StatusBadge } from "@/components/status-badge";
@@ -63,8 +64,21 @@ export default function Home() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
+
+  useEffect(() => {
+    const check = () => setMarketOpen(isMarketOpen());
+    const id = setInterval(check, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const fetchSignals = useCallback(async () => {
+    if (!isMarketOpen()) {
+      setMarketOpen(false);
+      setLoading(false);
+      return;
+    }
+    setMarketOpen(true);
     try {
       setError(null);
       const res = await fetch(`/api/signals?symbol=${segment}`);
@@ -81,10 +95,14 @@ export default function Home() {
   }, [segment]);
 
   useEffect(() => {
+    if (!marketOpen) {
+      setLoading(false);
+      return;
+    }
     fetchSignals();
     const interval = setInterval(fetchSignals, 30000);
     return () => clearInterval(interval);
-  }, [fetchSignals]);
+  }, [fetchSignals, marketOpen]);
 
   const sig = data?.signal;
   const isIndex = data?.source === "angel_one" && data?.marketData?.tradeVolume === 0;
@@ -113,7 +131,7 @@ export default function Home() {
               {new Date(data.timestamp).toLocaleTimeString()}
             </span>
           )}
-          <Button variant="ghost" size="icon" onClick={() => { setLoading(true); fetchSignals(); }} title="Refresh">
+          <Button variant="ghost" size="icon" onClick={() => { setLoading(true); fetchSignals(); }} title="Refresh" disabled={!marketOpen}>
             <RefreshCw className={`size-4 ${loading ? "animate-spin" : ""}`} />
           </Button>
         </div>
@@ -130,6 +148,19 @@ export default function Home() {
                 <p className="text-xs text-zinc-500 mt-0.5">Login at /login during market hours (9:15 AM - 3:30 PM IST)</p>
               </div>
               <Button variant="outline" size="sm" onClick={() => { setLoading(true); fetchSignals(); }}>Retry</Button>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Market Closed */}
+        {!marketOpen && (
+          <Card className="border-amber-500/20 bg-amber-500/5">
+            <CardContent className="p-4 flex items-center gap-3">
+              <Clock className="size-5 text-amber-400 shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-amber-300 font-medium">Market Closed</p>
+                <p className="text-xs text-zinc-500 mt-0.5">{getMarketStatusMessage()}</p>
+              </div>
             </CardContent>
           </Card>
         )}
@@ -247,7 +278,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {sig.bias !== "NEUTRAL" && (
+                {sig.bias !== "NEUTRAL" && marketOpen && (
                   <div className="mt-4">
                     <Button asChild className="w-full sm:w-auto">
                       <a href="/paper-trade">

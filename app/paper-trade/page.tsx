@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { SEGMENTS, type SegmentId, getSegment } from "@/lib/segments";
+import { isMarketOpen, getMarketStatusMessage } from "@/lib/utils";
 import { AppHeader, SegmentSelector } from "@/components/app-header";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +24,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   XCircle,
+  Clock,
   Menu,
 } from "lucide-react";
 
@@ -72,8 +74,15 @@ export default function PaperTradePage() {
   const [autoExitLog, setAutoExitLog] = useState<string[]>([]);
   const tradesRef = useRef(trades);
   tradesRef.current = trades;
+  const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
 
   useEffect(() => { setTrades(loadTrades()); setSettings(loadSettings()); }, []);
+
+  useEffect(() => {
+    const check = () => setMarketOpen(isMarketOpen());
+    const id = setInterval(check, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   const openTrades = trades.filter((t) => t.status === "OPEN");
   const closedTrades = trades.filter((t) => t.status !== "OPEN");
@@ -123,6 +132,8 @@ export default function PaperTradePage() {
   }
 
   const fetchQuote = useCallback(async (seg: SegmentId) => {
+    if (!isMarketOpen()) { setMarketOpen(false); return; }
+    setMarketOpen(true);
     try {
       const res = await fetch(`/api/signals?symbol=${seg}`);
       if (!res.ok) return;
@@ -150,19 +161,22 @@ export default function PaperTradePage() {
   }, []);
 
   useEffect(() => {
+    if (!marketOpen) return;
     fetchQuote(activeSegment);
     const interval = setInterval(() => fetchQuote(activeSegment), 30000);
     return () => clearInterval(interval);
-  }, [activeSegment, fetchQuote]);
+  }, [activeSegment, fetchQuote, marketOpen]);
 
   useEffect(() => {
+    if (!marketOpen) return;
     const openSegs = [...new Set(trades.filter((t) => t.status === "OPEN").map((t) => t.segment))];
     openSegs.forEach((s) => { if (s !== activeSegment) fetchQuote(s); });
-  }, [trades, activeSegment, fetchQuote]);
+  }, [trades, activeSegment, fetchQuote, marketOpen]);
 
   const q = quotes[activeSegment];
 
   function executeTrade() {
+    if (!marketOpen) return;
     if (!q?.optionStrike || !q.optionPremium || !q.optionTargets) return;
     if (q.optionSide === "BALANCED") return;
     const seg = getSegment(activeSegment);
@@ -244,7 +258,18 @@ export default function PaperTradePage() {
             </div>
 
             {/* Execute Trade */}
-            {q && (
+            {!marketOpen && (
+              <Card className="border-amber-500/20 bg-amber-500/5">
+                <CardContent className="p-4 flex items-center gap-3">
+                  <Clock className="size-5 text-amber-400 shrink-0" />
+                  <div className="flex-1">
+                    <p className="text-sm text-amber-300 font-medium">Market Closed — Trading Disabled</p>
+                    <p className="text-xs text-zinc-500 mt-0.5">{getMarketStatusMessage()}</p>
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {marketOpen && q && (
               <Card className="glow-border">
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">

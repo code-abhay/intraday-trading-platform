@@ -27,6 +27,7 @@ import {
 } from "@/lib/angel-one";
 import { getExpiryCandidates, buildOptionSymbol } from "@/lib/expiry-utils";
 import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
+import { isMarketOpen } from "@/lib/utils";
 import { fetchYahooIndexPrice } from "@/lib/yahoo-indices";
 
 const JWT_COOKIE = "angel_jwt";
@@ -660,6 +661,27 @@ export async function GET(request: NextRequest) {
   const symbolParam = request.nextUrl.searchParams.get("symbol") || "NIFTY";
   const segment = SEGMENTS.find((s) => s.id === symbolParam) ?? SEGMENTS[0];
   const symbol = segment.id;
+
+  if (!isMarketOpen()) {
+    return NextResponse.json({
+      source: "demo" as const,
+      symbol,
+      underlyingValue: segment.fallbackLTP,
+      signal: {
+        bias: "NEUTRAL",
+        confidence: 0,
+        pcr: { value: 0, bias: "N/A", callOI: 0, putOI: 0 },
+        maxPain: 0,
+        summary: "Market is closed. Trading hours: 9:15 AM – 3:30 PM IST (Mon–Fri).",
+      },
+      maxPain: [],
+      oiTable: undefined,
+      oiBuildupLong: undefined,
+      oiBuildupShort: undefined,
+      marketClosed: true,
+      timestamp: new Date().toISOString(),
+    });
+  }
 
   const apiKey = process.env.ANGEL_API_KEY;
   const jwtToken = request.cookies.get(JWT_COOKIE)?.value;
