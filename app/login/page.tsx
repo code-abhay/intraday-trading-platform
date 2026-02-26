@@ -2,6 +2,7 @@
 
 import { useState, useRef } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -201,10 +202,10 @@ export default function LoginPage() {
 
           <div className="mt-6 flex items-center justify-between">
             <Button variant="ghost" size="sm" asChild>
-              <a href="/">
+              <Link href="/">
                 <ArrowLeft className="size-3.5" />
                 Back to Dashboard
-              </a>
+              </Link>
             </Button>
             <Button variant="ghost" size="sm" asChild>
               <a href="/api/angel-one/verify-env" target="_blank" rel="noopener noreferrer">

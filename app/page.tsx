@@ -29,6 +29,7 @@ import {
   ChevronRight,
   Menu,
 } from "lucide-react";
+import Link from "next/link";
 
 // ────────────────────── Types ──────────────────────
 
@@ -281,10 +282,10 @@ export default function Home() {
                 {sig.bias !== "NEUTRAL" && marketOpen && (
                   <div className="mt-4">
                     <Button asChild className="w-full sm:w-auto">
-                      <a href="/paper-trade">
+                      <Link href="/paper-trade">
                         Take Paper Trade
                         <ArrowRight className="size-4" />
-                      </a>
+                      </Link>
                     </Button>
                   </div>
                 )}

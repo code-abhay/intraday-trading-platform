@@ -1,6 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { cn } from "@/lib/utils";
 import {
   Activity,
@@ -60,7 +61,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
         {navItems.map((item) => {
           const isActive = pathname === item.href;
           return (
-            <a
+            <Link
               key={item.href}
               href={item.href}
               className={cn(
@@ -74,7 +75,7 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             >
               <item.icon className="size-4 shrink-0" />
               {!collapsed && <span>{item.label}</span>}
-            </a>
+            </Link>
           );
         })}
       </nav>
