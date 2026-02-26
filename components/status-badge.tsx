@@ -30,7 +30,7 @@ export function StatusBadge({ bias, size = "md", className }: StatusBadgeProps) 
         normalized === "BEARISH" && "bg-red-400",
         normalized === "NEUTRAL" && "bg-amber-400",
       )} />
-      {bias}
+      {normalized}
     </span>
   );
 }
