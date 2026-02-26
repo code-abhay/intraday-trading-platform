@@ -14,8 +14,9 @@ import {
   angelOneGetCandleData,
   angelOneGetOptionGreeks,
   angelOneGetOIBuildup,
+  type AngelOneOptionGreekRow,
 } from "@/lib/angel-one";
-import { getNextWeeklyExpiry } from "@/lib/expiry-utils";
+import { getNextWeeklyExpiry, formatExpiryForAngelOne } from "@/lib/expiry-utils";
 import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
 import { fetchYahooIndexPrice } from "@/lib/yahoo-indices";
 
@@ -126,6 +127,93 @@ async function getSignalsFromNSE(nseSymbol: string) {
   };
 }
 
+/**
+ * Build OI table from Option Greeks data (strike-wise CE/PE with volume as proxy)
+ */
+function buildOITableFromGreeks(
+  greeks: AngelOneOptionGreekRow[],
+  underlyingValue: number,
+  strikeStep: number
+): { strike: number; ceOI: number; peOI: number; ceIV: number; peIV: number; ceDelta: number; peDelta: number }[] {
+  const strikeMap = new Map<number, { ceVol: number; peVol: number; ceIV: number; peIV: number; ceDelta: number; peDelta: number }>();
+
+  for (const g of greeks) {
+    const strike = parseFloat(String(g.strikePrice));
+    if (isNaN(strike)) continue;
+    const roundedStrike = Math.round(strike / strikeStep) * strikeStep;
+
+    if (!strikeMap.has(roundedStrike)) {
+      strikeMap.set(roundedStrike, { ceVol: 0, peVol: 0, ceIV: 0, peIV: 0, ceDelta: 0, peDelta: 0 });
+    }
+    const entry = strikeMap.get(roundedStrike)!;
+    const vol = parseFloat(String(g.tradeVolume ?? 0)) || 0;
+    const iv = parseFloat(String(g.impliedVolatility ?? 0)) || 0;
+    const delta = parseFloat(String(g.delta ?? 0)) || 0;
+
+    if (g.optionType === "CE") {
+      entry.ceVol = vol;
+      entry.ceIV = iv;
+      entry.ceDelta = delta;
+    } else {
+      entry.peVol = vol;
+      entry.peIV = iv;
+      entry.peDelta = delta;
+    }
+  }
+
+  // Filter to ±10 strikes around ATM
+  const atmStrike = Math.round(underlyingValue / strikeStep) * strikeStep;
+  const range = strikeStep * 10;
+
+  return Array.from(strikeMap.entries())
+    .filter(([s]) => s >= atmStrike - range && s <= atmStrike + range)
+    .sort(([a], [b]) => a - b)
+    .map(([strike, d]) => ({
+      strike,
+      ceOI: Math.round(d.ceVol),
+      peOI: Math.round(d.peVol),
+      ceIV: parseFloat(d.ceIV.toFixed(2)),
+      peIV: parseFloat(d.peIV.toFixed(2)),
+      ceDelta: parseFloat(d.ceDelta.toFixed(4)),
+      peDelta: parseFloat(d.peDelta.toFixed(4)),
+    }));
+}
+
+/**
+ * Compute Max Pain approximation from Option Greeks trade volume
+ */
+function computeMaxPainFromGreeks(
+  greeks: AngelOneOptionGreekRow[],
+  underlyingValue: number,
+  strikeStep: number
+): { strike: number; totalPayout: number }[] {
+  const strikeMap = new Map<number, { ceVol: number; peVol: number }>();
+
+  for (const g of greeks) {
+    const strike = Math.round(parseFloat(String(g.strikePrice)) / strikeStep) * strikeStep;
+    if (isNaN(strike)) continue;
+    if (!strikeMap.has(strike)) strikeMap.set(strike, { ceVol: 0, peVol: 0 });
+    const entry = strikeMap.get(strike)!;
+    const vol = parseFloat(String(g.tradeVolume ?? 0)) || 0;
+    if (g.optionType === "CE") entry.ceVol = vol;
+    else entry.peVol = vol;
+  }
+
+  const strikes = Array.from(strikeMap.keys()).sort((a, b) => a - b);
+
+  const payouts = strikes.map((testStrike) => {
+    let totalPayout = 0;
+    for (const [strike, d] of strikeMap) {
+      totalPayout +=
+        Math.max(0, testStrike - strike) * d.ceVol +
+        Math.max(0, strike - testStrike) * d.peVol;
+    }
+    return { strike: testStrike, totalPayout };
+  });
+
+  return payouts.sort((a, b) => a.totalPayout - b.totalPayout).slice(0, 5);
+}
+
 async function getSignalsFromAngelOne(
   jwtToken: string,
   apiKey: string,
@@ -145,7 +233,7 @@ async function getSignalsFromAngelOne(
     throw new Error(`${segment.label} not found in PCR. Available: ${symbols || "none"}`);
   }
 
-  // 2. Live Market Data (FULL mode) - single call gives LTP, today's OHLC, prev close, volume, OI
+  // 2. Live Market Data (FULL mode)
   let underlyingValue = 0;
   let todayOpen = 0;
   let todayHigh = 0;
@@ -168,7 +256,7 @@ async function getSignalsFromAngelOne(
       todayOpen = quote.open;
       todayHigh = quote.high;
       todayLow = quote.low;
-      prevClose = quote.close; // "close" = previous day close per docs
+      prevClose = quote.close;
       tradeVolume = quote.tradeVolume;
       totBuyQuan = quote.totBuyQuan;
       totSellQuan = quote.totSellQuan;
@@ -180,7 +268,6 @@ async function getSignalsFromAngelOne(
   if (!underlyingValue) underlyingValue = segment.fallbackLTP;
 
   // 3. Historical candle data for PDH/PDL/PDC and ATR
-  // prevClose from Market Quote = previous day close, but we also need previous day high/low
   let pdh: number | undefined;
   let pdl: number | undefined;
   let pdc: number | undefined;
@@ -218,7 +305,6 @@ async function getSignalsFromAngelOne(
     console.warn("[signals] Candle data failed:", e);
   }
 
-  // Fallback: use Market Quote data if candle data failed
   if (!pdh && prevClose > 0) {
     pdh = todayHigh || underlyingValue;
     pdl = todayLow || underlyingValue;
@@ -226,19 +312,41 @@ async function getSignalsFromAngelOne(
     atr = Math.abs(todayHigh - todayLow) || underlyingValue * 0.008;
   }
 
-  // 4. Option Greeks for real delta (NIFTY/BANKNIFTY/MIDCPNIFTY only; SENSEX may not support)
+  // 4. Option Greeks — full chain for OI table, delta, IV, and Max Pain
   let greekDelta: number | undefined;
-  if (segment.exchange === "NSE" && symbol !== "SENSEX") {
-    try {
-      const expiry = getNextWeeklyExpiry();
-      const greeks = await angelOneGetOptionGreeks(
-        jwtToken,
-        apiKey,
-        segment.angelSymbol,
-        expiry
-      );
+  let greeksData: AngelOneOptionGreekRow[] = [];
+  let oiTable: { strike: number; ceOI: number; peOI: number; ceIV?: number; peIV?: number; ceDelta?: number; peDelta?: number }[] = [];
+  let greeksMaxPain: { strike: number; totalPayout: number }[] = [];
+
+  if (segment.exchange === "NSE" || segment.exchange === "BSE") {
+    // Try current week expiry first, then next week
+    const expiries = [getNextWeeklyExpiry()];
+    const now = new Date();
+    const nextThursday = new Date(now);
+    nextThursday.setDate(nextThursday.getDate() + 7 - ((nextThursday.getDay() + 3) % 7));
+    expiries.push(formatExpiryForAngelOne(nextThursday));
+
+    for (const expiry of expiries) {
+      try {
+        greeksData = await angelOneGetOptionGreeks(
+          jwtToken,
+          apiKey,
+          segment.angelSymbol,
+          expiry
+        );
+        if (greeksData.length > 0) {
+          console.log(`[signals] Option Greeks success for expiry ${expiry}: ${greeksData.length} rows`);
+          break;
+        }
+      } catch (e) {
+        console.warn(`[signals] Option Greeks failed for expiry ${expiry}:`, e);
+      }
+    }
+
+    if (greeksData.length > 0) {
+      // ATM CE delta
       const atmStrike = Math.round(underlyingValue / step) * step;
-      const ceRow = greeks.find(
+      const ceRow = greeksData.find(
         (g) =>
           g.optionType === "CE" &&
           Math.abs(parseFloat(String(g.strikePrice)) - atmStrike) < step
@@ -246,12 +354,16 @@ async function getSignalsFromAngelOne(
       if (ceRow) {
         greekDelta = parseFloat(String(ceRow.delta));
       }
-    } catch (e) {
-      console.warn("[signals] Option Greeks failed:", e);
+
+      // Build OI table from Greeks
+      oiTable = buildOITableFromGreeks(greeksData, underlyingValue, step);
+
+      // Compute Max Pain from Greeks
+      greeksMaxPain = computeMaxPainFromGreeks(greeksData, underlyingValue, step);
     }
   }
 
-  // 5. OI Buildup for sentiment (Long Built Up, Short Built Up)
+  // 5. OI Buildup
   let oiBuildupLong: { symbol: string; oiChange: number; priceChange: number }[] = [];
   let oiBuildupShort: { symbol: string; oiChange: number; priceChange: number }[] = [];
   try {
@@ -264,16 +376,17 @@ async function getSignalsFromAngelOne(
         .filter((r) => {
           const sym = (r.tradingSymbol ?? "").toUpperCase();
           return (
-            (symbol === "NIFTY" && sym.startsWith("NIFTY") && !sym.includes("BANK")) ||
+            (symbol === "NIFTY" && sym.startsWith("NIFTY") && !sym.includes("BANK") && !sym.includes("MIDCP")) ||
             (symbol === "BANKNIFTY" && sym.includes("BANKNIFTY")) ||
-            (symbol === "MIDCPNIFTY" && sym.includes("MIDCP"))
+            (symbol === "MIDCPNIFTY" && sym.includes("MIDCP")) ||
+            (symbol === "SENSEX" && sym.includes("SENSEX"))
           );
         })
         .slice(0, 5)
         .map((r) => ({
           symbol: r.tradingSymbol ?? "",
           oiChange: typeof r.netChangeOpnInterest === "string" ? parseFloat(r.netChangeOpnInterest) || 0 : (r.netChangeOpnInterest ?? 0),
-          priceChange: typeof r.percentChange === "string" ? parseFloat(r.percentChange) || 0 : (r.percentChange ?? 0),
+          priceChange: typeof r.percentChange === "string" ? parseFloat(r.percentChange) || 0 : (typeof r.percentChange === "number" ? r.percentChange : 0),
         }));
     oiBuildupLong = filterRelevant(longUp);
     oiBuildupShort = filterRelevant(shortUp);
@@ -281,32 +394,23 @@ async function getSignalsFromAngelOne(
     console.warn("[signals] OI Buildup failed:", e);
   }
 
-  const debugInfo = {
-    symbol,
-    pcr: pcrItem.pcr,
-    pcrTradingSymbol: pcrItem.tradingSymbol,
-    underlyingValue,
-    todayOpen,
-    todayHigh,
-    todayLow,
-    prevClose,
-    tradeVolume,
-    totBuyQuan,
-    totSellQuan,
-    pdh,
-    pdl,
-    pdc,
-    atr,
-    greekDelta,
-    oiLongCount: oiBuildupLong.length,
-    oiShortCount: oiBuildupShort.length,
-  };
-  console.log("[signals] Angel One data:", debugInfo);
+  // Price action data for multi-factor bias
+  const priceAction = (prevClose > 0 && todayOpen > 0)
+    ? { ltp: underlyingValue, open: todayOpen, prevClose, high: todayHigh, low: todayLow }
+    : undefined;
+
+  const oiData = (oiBuildupLong.length + oiBuildupShort.length > 0)
+    ? { longCount: oiBuildupLong.length, shortCount: oiBuildupShort.length }
+    : undefined;
+
+  const maxPainStrike = greeksMaxPain.length > 0
+    ? greeksMaxPain[0].strike
+    : Math.round(underlyingValue / step) * step;
 
   const signal = generateSignalFromPCR(
     pcrItem.pcr,
     underlyingValue,
-    undefined,
+    maxPainStrike,
     {
       strikeStep: step,
       pdh,
@@ -314,8 +418,25 @@ async function getSignalsFromAngelOne(
       pdc,
       atr,
       greekDelta,
+      priceAction,
+      oiData,
     }
   );
+
+  console.log("[signals] Angel One result:", {
+    symbol,
+    pcr: pcrItem.pcr,
+    pcrSymbol: pcrItem.tradingSymbol,
+    bias: signal.bias,
+    biasStrength: signal.biasStrength,
+    confidence: signal.confidence,
+    underlyingValue,
+    maxPainStrike,
+    greeksCount: greeksData.length,
+    oiTableCount: oiTable.length,
+    oiLong: oiBuildupLong.length,
+    oiShort: oiBuildupShort.length,
+  });
 
   return {
     source: "angel_one" as const,
@@ -324,13 +445,8 @@ async function getSignalsFromAngelOne(
     signal,
     rawPCR: pcrItem.pcr,
     pcrSymbol: pcrItem.tradingSymbol,
-    maxPain: [
-      {
-        strike: Math.round(underlyingValue / step) * step,
-        totalPayout: 0,
-      },
-    ],
-    oiTable: undefined,
+    maxPain: greeksMaxPain.length > 0 ? greeksMaxPain : [{ strike: maxPainStrike, totalPayout: 0 }],
+    oiTable: oiTable.length > 0 ? oiTable : undefined,
     oiBuildupLong,
     oiBuildupShort,
     marketData: {
@@ -342,7 +458,6 @@ async function getSignalsFromAngelOne(
       buyQty: totBuyQuan,
       sellQty: totSellQuan,
     },
-    debugData: debugInfo,
     timestamp: new Date().toISOString(),
   };
 }
@@ -355,7 +470,6 @@ export async function GET(request: NextRequest) {
   const apiKey = process.env.ANGEL_API_KEY;
   const jwtToken = request.cookies.get(JWT_COOKIE)?.value;
 
-  // Try Angel One first if configured and logged in
   if (apiKey && jwtToken) {
     try {
       const data = await getSignalsFromAngelOne(jwtToken, apiKey, symbol);
@@ -363,11 +477,9 @@ export async function GET(request: NextRequest) {
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error("[signals] Angel One error:", message);
-      // Fall through to NSE
     }
   }
 
-  // Fallback to NSE (only if segment has NSE option chain)
   if (segment.nseSymbol) {
     try {
       const data = await getSignalsFromNSE(segment.nseSymbol);
@@ -378,16 +490,10 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Demo data when both fail (or SENSEX which has no NSE option chain)
-  // Try Yahoo Finance for live price; fallback to static value
   const yahooPrice = await fetchYahooIndexPrice(symbol);
   const uv = yahooPrice ?? segment.fallbackLTP;
   const step = segment.strikeStep;
-  // Use PCR 1.25 (bullish) in demo so targets/stops show different values for UI demo
-  const demoSignal = generateSignalFromPCR(1.25, uv, uv, {
-    strikeStep: step,
-  });
-  // Override summary to indicate demo
+  const demoSignal = generateSignalFromPCR(1.25, uv, uv, { strikeStep: step });
   demoSignal.summary = `Demo: Sample BULLISH signal (PCR 1.25). Live data: login at /login during market hours.`;
   const demoData = {
     source: "demo" as const,

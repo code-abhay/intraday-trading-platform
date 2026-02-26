@@ -48,6 +48,7 @@ interface Sentiment {
 
 interface Signal {
   bias: string;
+  biasStrength?: string;
   entry?: number;
   stopLoss?: number;
   target?: number;
@@ -60,6 +61,8 @@ interface Signal {
   maxPain: number;
   summary: string;
   targets?: TargetsStops;
+  bullishTargets?: TargetsStops;
+  bearishTargets?: TargetsStops;
   optionsAdvisor?: OptionsAdvisor;
   srLevels?: SRLevels;
   sentiment?: Sentiment;
@@ -69,6 +72,10 @@ interface OITableRow {
   strike: number;
   ceOI: number;
   peOI: number;
+  ceIV?: number;
+  peIV?: number;
+  ceDelta?: number;
+  peDelta?: number;
 }
 
 interface OIBuildupItem {
@@ -179,18 +186,16 @@ export default function Home() {
     return () => clearInterval(interval);
   }, [fetchSignals]);
 
+  const sig = data?.signal;
+  const isIndex = data?.source === "angel_one" && data?.marketData?.tradeVolume === 0;
+
   return (
     <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans">
-      {/* Navigation */}
       <nav className="border-b border-zinc-800 bg-zinc-900/50 px-6 py-3">
         <div className="flex items-center justify-between">
           <div className="flex gap-6">
-            <a href="/" className="font-semibold text-emerald-400">
-              Dashboard
-            </a>
-            <a href="/login" className="text-zinc-400 hover:text-zinc-200">
-              Angel One Login
-            </a>
+            <a href="/" className="font-semibold text-emerald-400">Dashboard</a>
+            <a href="/login" className="text-zinc-400 hover:text-zinc-200">Angel One Login</a>
           </div>
           <LogoutButton />
         </div>
@@ -200,9 +205,7 @@ export default function Home() {
         <header className="mb-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div>
-              <h1 className="text-2xl font-bold text-emerald-400">
-                Intraday Trading Platform
-              </h1>
+              <h1 className="text-2xl font-bold text-emerald-400">Intraday Trading Platform</h1>
               <p className="text-zinc-500 text-sm mt-1">
                 OI analytics • Polling every 30s
                 {data?.source && (
@@ -220,9 +223,7 @@ export default function Home() {
                 className="rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-zinc-100 focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
               >
                 {SEGMENTS.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.label}
-                  </option>
+                  <option key={s.id} value={s.id}>{s.label}</option>
                 ))}
               </select>
             </div>
@@ -233,19 +234,14 @@ export default function Home() {
           <div className="mb-6 rounded-lg bg-red-950/50 border border-red-800 p-4 text-red-300">
             <strong>Data Error:</strong> {error}
             <span className="text-zinc-500 text-sm block mt-1">
-              Login at /login during market hours (9:15 AM - 3:30 PM IST) for Angel One data. NSE may be blocked from server.
+              Login at /login during market hours (9:15 AM - 3:30 PM IST) for Angel One data.
             </span>
-            <button
-              onClick={() => { setLoading(true); fetchSignals(); }}
-              className="mt-2 text-sm underline"
-            >
-              Retry
-            </button>
+            <button onClick={() => { setLoading(true); fetchSignals(); }} className="mt-2 text-sm underline">Retry</button>
           </div>
         )}
 
-        {/* Dashboard - always visible, with placeholders when no data */}
         <div className="space-y-6">
+          {/* Top Cards */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card
               title="Underlying (LTP)"
@@ -263,64 +259,66 @@ export default function Home() {
             />
             <Card
               title="Bias"
-              value={data ? data.signal.bias : (loading ? "..." : "—")}
+              value={data ? `${data.signal.bias}${sig?.biasStrength && sig.biasStrength !== "NEUTRAL" ? ` (${sig.biasStrength})` : ""}` : (loading ? "..." : "—")}
               highlight={data?.signal.bias}
             />
           </div>
 
-          {/* Market Data from Angel One FULL mode */}
+          {/* Market Data */}
           {data?.marketData && (
             <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
               <Card title="Open" value={data.marketData.todayOpen.toFixed(2)} />
               <Card title="High" value={data.marketData.todayHigh.toFixed(2)} />
               <Card title="Low" value={data.marketData.todayLow.toFixed(2)} />
               <Card title="Prev Close" value={data.marketData.prevClose.toFixed(2)} />
-              <Card title="Volume" value={formatNum(data.marketData.tradeVolume)} />
+              <Card title="Volume" value={isIndex ? "N/A (Index)" : formatNum(data.marketData.tradeVolume)} />
               <Card
                 title="Buy / Sell Qty"
-                value={`${formatNum(data.marketData.buyQty)} / ${formatNum(data.marketData.sellQty)}`}
+                value={isIndex ? "N/A (Index)" : `${formatNum(data.marketData.buyQty)} / ${formatNum(data.marketData.sellQty)}`}
               />
             </div>
           )}
 
+          {/* Signal Section */}
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold text-emerald-400 mb-2">
-                  Signal
-                </h2>
+                <h2 className="text-lg font-semibold text-emerald-400 mb-2">Signal</h2>
                 <p className="text-zinc-300">
                   {data ? data.signal.summary : (loading ? "Loading..." : "No data — login during market hours or retry.")}
                 </p>
-                {data && (
+                {sig && (
                   <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                    {data.signal.bias !== "NEUTRAL" && data.signal.entry != null && (
-                      <>
-                        <span>Entry: <strong>{data.signal.entry}</strong></span>
-                        <span>SL: <strong className="text-red-400">{data.signal.stopLoss}</strong></span>
-                        <span>T3: <strong className="text-emerald-400">{data.signal.target}</strong></span>
-                      </>
+                    {sig.entry != null && (
+                      <span>Entry: <strong>{sig.entry.toFixed(2)}</strong></span>
                     )}
-                    <span>Confidence: <strong>{data.signal.confidence}%</strong></span>
+                    {sig.bias !== "NEUTRAL" && sig.stopLoss != null && (
+                      <span>SL: <strong className="text-red-400">{sig.stopLoss}</strong></span>
+                    )}
+                    {sig.bias !== "NEUTRAL" && sig.target != null && (
+                      <span>T3: <strong className="text-emerald-400">{sig.target}</strong></span>
+                    )}
+                    <span>Confidence: <strong>{sig.confidence}%</strong></span>
                   </div>
                 )}
               </div>
-              {data?.signal?.targets && data.signal.bias !== "NEUTRAL" && (
+              {sig?.targets && sig.bias !== "NEUTRAL" && (
                 <button
                   type="button"
                   onClick={() => {
+                    if (!data) return;
                     const seg = SEGMENTS.find((s) => s.id === data.symbol) ?? SEGMENTS[0];
                     const t: SuggestedTrade = {
                       id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
                       symbol: data.symbol,
                       segmentLabel: seg.label,
-                      bias: data.signal.bias,
-                      entry: data.signal.targets!.entry,
-                      stopLoss: data.signal.targets!.stopLoss,
-                      t1: data.signal.targets!.t1,
-                      t2: data.signal.targets!.t2,
-                      t3: data.signal.targets!.t3,
-                      trailingStop: data.signal.targets!.trailingStop,
+                      bias: sig.bias,
+                      entry: sig.targets!.entry,
+                      stopLoss: sig.targets!.stopLoss,
+                      t1: sig.targets!.t1,
+                      t2: sig.targets!.t2,
+                      t3: sig.targets!.t3,
+                      trailingStop: sig.targets!.trailingStop,
                       status: "OPEN",
                       createdAt: new Date().toISOString(),
                     };
@@ -336,11 +334,9 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Suggested Trades / Position Table */}
+          {/* Suggested Trades */}
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-            <h2 className="text-lg font-semibold text-emerald-400 mb-3">
-              Suggested Trades
-            </h2>
+            <h2 className="text-lg font-semibold text-emerald-400 mb-3">Suggested Trades</h2>
             {trades.length === 0 ? (
               <p className="text-zinc-500 text-sm">No trades yet. Add a signal above when bias is BULLISH or BEARISH.</p>
             ) : (
@@ -364,9 +360,7 @@ export default function Home() {
                     {trades.map((t) => (
                       <tr key={t.id} className="border-b border-zinc-800 hover:bg-zinc-800/50">
                         <td className="py-2 px-2 font-medium">{t.segmentLabel}</td>
-                        <td className={`py-2 px-2 font-medium ${t.bias === "BULLISH" ? "text-emerald-400" : t.bias === "BEARISH" ? "text-red-400" : ""}`}>
-                          {t.bias}
-                        </td>
+                        <td className={`py-2 px-2 font-medium ${t.bias === "BULLISH" ? "text-emerald-400" : t.bias === "BEARISH" ? "text-red-400" : ""}`}>{t.bias}</td>
                         <td className="py-2 px-2">{t.entry}</td>
                         <td className="py-2 px-2 text-red-400">{t.stopLoss}</td>
                         <td className="py-2 px-2 text-emerald-400">{t.t1}</td>
@@ -380,9 +374,7 @@ export default function Home() {
                             t.status === "SL_HIT" || t.status === "TRAILING_SL_HIT" ? "bg-red-900/50 text-red-400" :
                             t.status === "T1_HIT" || t.status === "T2_HIT" ? "bg-amber-900/50 text-amber-400" :
                             "bg-zinc-700 text-zinc-400"
-                          }`}>
-                            {t.status.replace(/_/g, " ")}
-                          </span>
+                          }`}>{t.status.replace(/_/g, " ")}</span>
                         </td>
                         <td className="py-2 px-2">
                           <div className="flex items-center gap-2">
@@ -390,9 +382,7 @@ export default function Home() {
                               value={t.status}
                               onChange={(e) => {
                                 const s = e.target.value as TradeStatus;
-                                const next = trades.map((x) =>
-                                  x.id === t.id ? { ...x, status: s } : x
-                                );
+                                const next = trades.map((x) => x.id === t.id ? { ...x, status: s } : x);
                                 setTrades(next);
                                 saveTrades(next);
                               }}
@@ -414,9 +404,7 @@ export default function Home() {
                                 saveTrades(next);
                               }}
                               className="rounded bg-red-900/50 px-2 py-0.5 text-xs text-red-400 hover:bg-red-900/70"
-                            >
-                              Remove
-                            </button>
+                            >Remove</button>
                           </div>
                         </td>
                       </tr>
@@ -427,123 +415,145 @@ export default function Home() {
             )}
           </div>
 
-          {/* Targets & Stops (T1, T2, T3, SL, Trailing Stop) */}
-          {data?.signal?.targets && (
+          {/* Targets & Stops — show both sides when NEUTRAL */}
+          {sig && (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <h2 className="text-lg font-semibold text-emerald-400 mb-3">
-                Targets &amp; Stops
-              </h2>
-              {data.signal.bias === "NEUTRAL" || data.signal.targets.slPoints === 0 ? (
-                <p className="text-zinc-500 text-sm">
-                  No trade signal — PCR is neutral. Targets and stops will appear when bias is BULLISH or BEARISH.
-                </p>
-              ) : (
+              <h2 className="text-lg font-semibold text-emerald-400 mb-3">Targets &amp; Stops</h2>
+              {sig.bias !== "NEUTRAL" && sig.targets ? (
                 <>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    <LevelCard label="Entry" value={data.signal.targets.entry} />
-                    <LevelCard label="Stop Loss" value={data.signal.targets.stopLoss} variant="danger" />
-                    <LevelCard label="Trailing Stop" value={data.signal.targets.trailingStop} variant="warning" />
-                    <LevelCard label="Target 1 (1.36R)" value={data.signal.targets.t1} variant="success" />
-                    <LevelCard label="Target 2 (2.73R)" value={data.signal.targets.t2} variant="success" />
-                    <LevelCard label="Target 3 (4.55R)" value={data.signal.targets.t3} variant="success" />
+                    <LevelCard label="Entry" value={sig.targets.entry} />
+                    <LevelCard label="Stop Loss" value={sig.targets.stopLoss} variant="danger" />
+                    <LevelCard label="Trailing Stop" value={sig.targets.trailingStop} variant="warning" />
+                    <LevelCard label="Target 1 (1.36R)" value={sig.targets.t1} variant="success" />
+                    <LevelCard label="Target 2 (2.73R)" value={sig.targets.t2} variant="success" />
+                    <LevelCard label="Target 3 (4.55R)" value={sig.targets.t3} variant="success" />
                   </div>
                   <p className="mt-2 text-xs text-zinc-500">
-                    SL points: {data.signal.targets.slPoints.toFixed(0)} • R:R T1={data.signal.targets.rr1} T2={data.signal.targets.rr2} T3={data.signal.targets.rr3}
+                    SL points: {sig.targets.slPoints.toFixed(0)} • R:R T1={sig.targets.rr1} T2={sig.targets.rr2} T3={sig.targets.rr3}
                   </p>
                 </>
+              ) : (
+                <div className="space-y-4">
+                  <p className="text-zinc-400 text-sm">Market is sideways. Showing both-side scenarios:</p>
+                  {sig.bullishTargets && (
+                    <div>
+                      <h3 className="text-sm font-medium text-emerald-400/80 mb-2">If Bullish (Buy CE)</h3>
+                      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                        <LevelCard label="Entry" value={sig.bullishTargets.entry} />
+                        <LevelCard label="SL" value={sig.bullishTargets.stopLoss} variant="danger" />
+                        <LevelCard label="T1" value={sig.bullishTargets.t1} variant="success" />
+                        <LevelCard label="T2" value={sig.bullishTargets.t2} variant="success" />
+                        <LevelCard label="T3" value={sig.bullishTargets.t3} variant="success" />
+                        <LevelCard label="Trail SL" value={sig.bullishTargets.trailingStop} variant="warning" />
+                      </div>
+                    </div>
+                  )}
+                  {sig.bearishTargets && (
+                    <div>
+                      <h3 className="text-sm font-medium text-red-400/80 mb-2">If Bearish (Buy PE)</h3>
+                      <div className="grid gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                        <LevelCard label="Entry" value={sig.bearishTargets.entry} />
+                        <LevelCard label="SL" value={sig.bearishTargets.stopLoss} variant="danger" />
+                        <LevelCard label="T1" value={sig.bearishTargets.t1} variant="success" />
+                        <LevelCard label="T2" value={sig.bearishTargets.t2} variant="success" />
+                        <LevelCard label="T3" value={sig.bearishTargets.t3} variant="success" />
+                        <LevelCard label="Trail SL" value={sig.bearishTargets.trailingStop} variant="warning" />
+                      </div>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
 
           {/* Options Advisor */}
-          {data?.signal?.optionsAdvisor && (
+          {sig?.optionsAdvisor && (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <h2 className="text-lg font-semibold text-emerald-400 mb-3">
-                Options Advisor
-              </h2>
+              <h2 className="text-lg font-semibold text-emerald-400 mb-3">Options Advisor</h2>
               <div className="flex flex-wrap gap-4">
                 <span className="rounded bg-zinc-800 px-3 py-2">
                   <span className="text-zinc-500 text-xs">Strike</span>
-                  <div className="font-bold">{data.signal.optionsAdvisor.strike}</div>
+                  <div className="font-bold">{sig.optionsAdvisor.strike}</div>
                 </span>
                 <span className="rounded bg-zinc-800 px-3 py-2">
                   <span className="text-zinc-500 text-xs">Side</span>
-                  <div className={`font-bold ${data.signal.optionsAdvisor.side === "CALL" ? "text-emerald-400" : data.signal.optionsAdvisor.side === "PUT" ? "text-red-400" : ""}`}>
-                    {data.signal.optionsAdvisor.side}
+                  <div className={`font-bold ${sig.optionsAdvisor.side === "CALL" ? "text-emerald-400" : sig.optionsAdvisor.side === "PUT" ? "text-red-400" : "text-amber-400"}`}>
+                    {sig.optionsAdvisor.side === "BALANCED"
+                      ? `${sig.optionsAdvisor.strike} CE / PE`
+                      : `${sig.optionsAdvisor.strike} ${sig.optionsAdvisor.side}`}
                   </div>
                 </span>
                 <span className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Premium (₹)</span>
-                  <div className="font-bold">{data.signal.optionsAdvisor.premium.toFixed(0)}</div>
+                  <span className="text-zinc-500 text-xs">Premium (approx ₹)</span>
+                  <div className="font-bold">{sig.optionsAdvisor.premium}</div>
                 </span>
                 <span className="rounded bg-zinc-800 px-3 py-2">
                   <span className="text-zinc-500 text-xs">Delta</span>
-                  <div className="font-bold">{data.signal.optionsAdvisor.delta}</div>
-                </span>
-                <span className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Mode</span>
-                  <div className="font-bold">{data.signal.optionsAdvisor.mode}</div>
+                  <div className="font-bold">{sig.optionsAdvisor.delta !== 0 ? sig.optionsAdvisor.delta.toFixed(4) : "—"}</div>
                 </span>
                 <span className="rounded bg-zinc-800 px-3 py-2">
                   <span className="text-zinc-500 text-xs">Days to Expiry</span>
-                  <div className="font-bold">{data.signal.optionsAdvisor.daysToExpiry}</div>
+                  <div className="font-bold">{sig.optionsAdvisor.daysToExpiry}</div>
                 </span>
               </div>
+              {sig.bias === "NEUTRAL" && (
+                <p className="mt-2 text-xs text-zinc-500">
+                  Market is sideways — consider straddle/strangle strategy or wait for directional bias.
+                </p>
+              )}
             </div>
           )}
 
           {/* S/R Levels */}
-          {data?.signal?.srLevels && (
+          {sig?.srLevels && (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <h2 className="text-lg font-semibold text-emerald-400 mb-3">
-                Support / Resistance Levels
-              </h2>
+              <h2 className="text-lg font-semibold text-emerald-400 mb-3">Support / Resistance Levels</h2>
               <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
-                <LevelCard label="PDH" value={data.signal.srLevels.pdh} />
-                <LevelCard label="PDL" value={data.signal.srLevels.pdl} />
-                <LevelCard label="PDC" value={data.signal.srLevels.pdc} />
-                <LevelCard label="Pivot" value={data.signal.srLevels.pivot} />
-                <LevelCard label="CPR TC" value={data.signal.srLevels.cprTC} />
-                <LevelCard label="CPR BC" value={data.signal.srLevels.cprBC} />
-                <LevelCard label="R1" value={data.signal.srLevels.r1} variant="success" />
-                <LevelCard label="R2" value={data.signal.srLevels.r2} variant="success" />
-                <LevelCard label="S1" value={data.signal.srLevels.s1} variant="danger" />
-                <LevelCard label="S2" value={data.signal.srLevels.s2} variant="danger" />
-                <LevelCard label="Cam H3" value={data.signal.srLevels.camH3} />
-                <LevelCard label="Cam L3" value={data.signal.srLevels.camL3} />
+                <LevelCard label="PDH" value={sig.srLevels.pdh} />
+                <LevelCard label="PDL" value={sig.srLevels.pdl} />
+                <LevelCard label="PDC" value={sig.srLevels.pdc} />
+                <LevelCard label="Pivot" value={sig.srLevels.pivot} />
+                <LevelCard label="CPR TC" value={sig.srLevels.cprTC} />
+                <LevelCard label="CPR BC" value={sig.srLevels.cprBC} />
+                <LevelCard label="R1" value={sig.srLevels.r1} variant="success" />
+                <LevelCard label="R2" value={sig.srLevels.r2} variant="success" />
+                <LevelCard label="S1" value={sig.srLevels.s1} variant="danger" />
+                <LevelCard label="S2" value={sig.srLevels.s2} variant="danger" />
+                <LevelCard label="Cam H3" value={sig.srLevels.camH3} />
+                <LevelCard label="Cam L3" value={sig.srLevels.camL3} />
               </div>
             </div>
           )}
 
-          {/* Sentiment */}
-          {data?.signal?.sentiment && (
+          {/* Sentiment Score */}
+          {sig?.sentiment && (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <h2 className="text-lg font-semibold text-emerald-400 mb-2">
-                Sentiment Score
-              </h2>
+              <h2 className="text-lg font-semibold text-emerald-400 mb-2">Sentiment Score</h2>
               <div className="flex flex-wrap items-center gap-4">
                 <span className={`text-2xl font-bold ${
-                  data.signal.sentiment.score >= 20 ? "text-emerald-400" :
-                  data.signal.sentiment.score <= -20 ? "text-red-400" : "text-zinc-400"
+                  sig.sentiment.score >= 20 ? "text-emerald-400" :
+                  sig.sentiment.score <= -20 ? "text-red-400" : "text-zinc-400"
                 }`}>
-                  {data.signal.sentiment.score > 0 ? "+" : ""}{data.signal.sentiment.score}
+                  {sig.sentiment.score > 0 ? "+" : ""}{sig.sentiment.score}
                 </span>
-                <span className="rounded bg-zinc-800 px-3 py-1 font-medium">
-                  {data.signal.sentiment.side}
+                <span className={`rounded px-3 py-1 font-medium ${
+                  sig.sentiment.side.includes("BUY") ? "bg-emerald-900/50 text-emerald-400" :
+                  sig.sentiment.side.includes("SELL") ? "bg-red-900/50 text-red-400" :
+                  "bg-zinc-800 text-zinc-400"
+                }`}>
+                  {sig.sentiment.side}
                 </span>
-                <span className="text-zinc-500 text-sm">
-                  {data.signal.sentiment.optionsBias}
-                </span>
+                <span className="text-zinc-500 text-sm">{sig.sentiment.optionsBias}</span>
               </div>
+              <p className="text-xs text-zinc-600 mt-1">Factors: PCR + Price Action + OI Buildup</p>
             </div>
           )}
 
-          {/* OI Buildup (Angel One) */}
+          {/* OI Buildup */}
           {(data?.oiBuildupLong?.length || data?.oiBuildupShort?.length) ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <h2 className="text-lg font-semibold text-emerald-400 mb-3">
-                OI Buildup
-              </h2>
+              <h2 className="text-lg font-semibold text-emerald-400 mb-3">OI Buildup</h2>
               <div className="grid gap-4 sm:grid-cols-2">
                 {data.oiBuildupLong?.length ? (
                   <div>
@@ -552,7 +562,7 @@ export default function Home() {
                       {data.oiBuildupLong.map((r) => (
                         <li key={r.symbol} className="flex justify-between">
                           <span className="text-zinc-400 truncate max-w-[180px]">{r.symbol}</span>
-                          <span className="text-emerald-400">OI +{r.oiChange.toLocaleString()}</span>
+                          <span className="text-emerald-400">OI {r.oiChange > 0 ? "+" : ""}{r.oiChange.toLocaleString()} ({r.priceChange > 0 ? "+" : ""}{r.priceChange.toFixed(2)}%)</span>
                         </li>
                       ))}
                     </ul>
@@ -565,7 +575,7 @@ export default function Home() {
                       {data.oiBuildupShort.map((r) => (
                         <li key={r.symbol} className="flex justify-between">
                           <span className="text-zinc-400 truncate max-w-[180px]">{r.symbol}</span>
-                          <span className="text-red-400">OI +{r.oiChange.toLocaleString()}</span>
+                          <span className="text-red-400">OI {r.oiChange > 0 ? "+" : ""}{r.oiChange.toLocaleString()} ({r.priceChange > 0 ? "+" : ""}{r.priceChange.toFixed(2)}%)</span>
                         </li>
                       ))}
                     </ul>
@@ -575,85 +585,70 @@ export default function Home() {
             </div>
           ) : null}
 
-          {/* OI Table & Strike Heatmap - NSE only */}
+          {/* OI Table & Strike Heatmap */}
           {data?.oiTable && data.oiTable.length > 0 ? (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
               <h2 className="text-lg font-semibold text-emerald-400 mb-3">
-                OI Table &amp; Strike Heatmap
+                Option Chain (Strike-wise)
               </h2>
-              <div className="overflow-x-auto max-h-64 overflow-y-auto">
+              <div className="overflow-x-auto max-h-80 overflow-y-auto">
                 <table className="w-full text-sm">
                   <thead className="sticky top-0 bg-zinc-900">
                     <tr className="text-zinc-500 text-left">
-                      <th className="py-2 px-2">Strike</th>
-                      <th className="py-2 px-2">CE OI</th>
-                      <th className="py-2 px-2">PE OI</th>
-                      <th className="py-2 px-2">Total</th>
+                      <th className="py-2 px-2 text-emerald-400/60">CE Vol</th>
+                      <th className="py-2 px-2 text-emerald-400/60">CE IV</th>
+                      <th className="py-2 px-2 text-emerald-400/60">CE Delta</th>
+                      <th className="py-2 px-2 font-bold text-zinc-300">Strike</th>
+                      <th className="py-2 px-2 text-red-400/60">PE Delta</th>
+                      <th className="py-2 px-2 text-red-400/60">PE IV</th>
+                      <th className="py-2 px-2 text-red-400/60">PE Vol</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.oiTable
-                      .filter((r) => r.strike >= (data.underlyingValue - 500) && r.strike <= (data.underlyingValue + 500))
-                      .map((r) => {
-                        const total = r.ceOI + r.peOI;
-                        const maxOI = Math.max(...data.oiTable!.map((x) => x.ceOI + x.peOI), 1);
-                        const intensity = Math.min(100, (total / maxOI) * 100);
-                        return (
-                          <tr
-                            key={r.strike}
-                            className={`border-t border-zinc-800 ${
-                              Math.abs(r.strike - data.underlyingValue) < 50 ? "bg-emerald-900/20" : ""
-                            }`}
-                          >
-                            <td className="py-1.5 px-2 font-medium">{r.strike}</td>
-                            <td className="py-1.5 px-2 text-emerald-400/90">{r.ceOI.toLocaleString()}</td>
-                            <td className="py-1.5 px-2 text-red-400/90">{r.peOI.toLocaleString()}</td>
-                            <td className="py-1.5 px-2">
-                              <span
-                                className="inline-block rounded px-2 py-0.5"
-                                style={{
-                                  backgroundColor: `rgba(16, 185, 129, ${intensity / 100})`,
-                                }}
-                              >
-                                {total.toLocaleString()}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
+                    {data.oiTable.map((r) => {
+                      const isATM = data && Math.abs(r.strike - data.underlyingValue) < (SEGMENTS.find(s => s.id === data.symbol)?.strikeStep ?? 50);
+                      return (
+                        <tr
+                          key={r.strike}
+                          className={`border-t border-zinc-800 ${isATM ? "bg-emerald-900/20 font-medium" : ""}`}
+                        >
+                          <td className="py-1.5 px-2 text-emerald-400/90">{r.ceOI > 0 ? r.ceOI.toLocaleString() : "—"}</td>
+                          <td className="py-1.5 px-2 text-zinc-400">{r.ceIV ? `${r.ceIV}%` : "—"}</td>
+                          <td className="py-1.5 px-2 text-zinc-400">{r.ceDelta ? r.ceDelta.toFixed(3) : "—"}</td>
+                          <td className={`py-1.5 px-2 font-bold ${isATM ? "text-emerald-400" : "text-zinc-200"}`}>{r.strike}</td>
+                          <td className="py-1.5 px-2 text-zinc-400">{r.peDelta ? r.peDelta.toFixed(3) : "—"}</td>
+                          <td className="py-1.5 px-2 text-zinc-400">{r.peIV ? `${r.peIV}%` : "—"}</td>
+                          <td className="py-1.5 px-2 text-red-400/90">{r.peOI > 0 ? r.peOI.toLocaleString() : "—"}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
               <p className="mt-2 text-xs text-zinc-500">
-                ATM strikes highlighted. OI data from NSE. Heatmap shows total OI intensity.
+                {data.source === "angel_one" ? "Data from Angel One Option Greeks API. Vol = Trade Volume (proxy for activity)." : "OI data from NSE option chain."}
               </p>
             </div>
           ) : data && (data.source === "angel_one" || data.source === "demo") && (
             <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <h2 className="text-lg font-semibold text-emerald-400 mb-2">
-                OI Table &amp; Strike Heatmap
-              </h2>
+              <h2 className="text-lg font-semibold text-emerald-400 mb-2">Option Chain</h2>
               <p className="text-zinc-500 text-sm">
-                OI data available when using NSE. Angel One / Demo mode does not provide option chain.
+                Option chain data loading... If empty, Option Greeks API may not have data for current expiry.
               </p>
             </div>
           )}
 
+          {/* Max Pain */}
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
             <h2 className="text-lg font-semibold text-emerald-400 mb-2">
-              Max Pain {(data?.source === "angel_one" || data?.source === "demo") && "(approx)"}
+              Max Pain {data?.oiTable?.length ? "" : "(approx)"}
             </h2>
             <div className="flex flex-wrap gap-3">
               {data?.maxPain?.length ? (
                 data.maxPain.map((mp) => (
-                  <span
-                    key={mp.strike}
-                    className="rounded bg-zinc-800 px-3 py-1 text-sm"
-                  >
+                  <span key={mp.strike} className="rounded bg-zinc-800 px-3 py-1 text-sm">
                     {mp.strike}
-                    {mp.totalPayout > 0 && (
-                      <> (₹{(mp.totalPayout / 1e6).toFixed(1)}M)</>
-                    )}
+                    {mp.totalPayout > 0 && <> (₹{(mp.totalPayout / 1e6).toFixed(1)}M)</>}
                   </span>
                 ))
               ) : (
@@ -663,9 +658,7 @@ export default function Home() {
           </div>
 
           {data && (
-            <p className="text-xs text-zinc-600">
-              Last updated: {new Date(data.timestamp).toLocaleString()}
-            </p>
+            <p className="text-xs text-zinc-600">Last updated: {new Date(data.timestamp).toLocaleString()}</p>
           )}
         </div>
       </main>
@@ -679,11 +672,7 @@ function LogoutButton() {
     window.location.reload();
   };
   return (
-    <button
-      type="button"
-      onClick={handleLogout}
-      className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200"
-    >
+    <button type="button" onClick={handleLogout} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">
       Logout
     </button>
   );
@@ -696,15 +685,7 @@ function formatNum(n: number): string {
   return String(n);
 }
 
-function LevelCard({
-  label,
-  value,
-  variant,
-}: {
-  label: string;
-  value: number;
-  variant?: "success" | "danger" | "warning";
-}) {
+function LevelCard({ label, value, variant }: { label: string; value: number; variant?: "success" | "danger" | "warning" }) {
   const cls =
     variant === "success" ? "text-emerald-400" :
     variant === "danger" ? "text-red-400" :
@@ -717,32 +698,14 @@ function LevelCard({
   );
 }
 
-function Card({
-  title,
-  value,
-  sub,
-  highlight,
-}: {
-  title: string;
-  value: string;
-  sub?: string;
-  highlight?: string;
-}) {
+function Card({ title, value, sub, highlight }: { title: string; value: string; sub?: string; highlight?: string }) {
   const isBull = highlight === "BULLISH";
   const isBear = highlight === "BEARISH";
   return (
     <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
       <div className="text-xs text-zinc-500 uppercase tracking-wide">{title}</div>
-      <div
-        className={`text-xl font-bold mt-1 ${
-          isBull ? "text-emerald-400" : isBear ? "text-red-400" : ""
-        }`}
-      >
-        {value}
-      </div>
-      {sub && (
-        <div className="text-sm text-zinc-500 mt-0.5">{sub}</div>
-      )}
+      <div className={`text-xl font-bold mt-1 ${isBull ? "text-emerald-400" : isBear ? "text-red-400" : ""}`}>{value}</div>
+      {sub && <div className="text-sm text-zinc-500 mt-0.5">{sub}</div>}
     </div>
   );
 }

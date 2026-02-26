@@ -24,6 +24,7 @@ export interface MaxPainResult {
 
 export interface StrategySignal {
   bias: "BULLISH" | "BEARISH" | "NEUTRAL";
+  biasStrength: "STRONG" | "MODERATE" | "MILD" | "NEUTRAL";
   entry?: number;
   stopLoss?: number;
   target?: number;
@@ -36,6 +37,8 @@ export interface StrategySignal {
   maxPain: number;
   summary: string;
   targets?: TargetsStops;
+  bullishTargets?: TargetsStops;
+  bearishTargets?: TargetsStops;
   optionsAdvisor?: OptionsAdvisor;
   srLevels?: SRLevels;
   sentiment?: Sentiment;
@@ -85,8 +88,7 @@ export interface Sentiment {
 }
 
 /**
- * PCR = Total Put OI / Total Call OI
- * > 1.2 → Bullish, < 0.8 → Bearish
+ * PCR = Total Put OI / Total Call OI (from NSE option chain)
  */
 export function computePCR(data: OptionChainRow[]): PCRResult {
   let totalCallOI = 0;
@@ -99,19 +101,12 @@ export function computePCR(data: OptionChainRow[]): PCRResult {
 
   const value = totalCallOI > 0 ? totalPutOI / totalCallOI : 0;
   let bias: PCRResult["bias"] = "NEUTRAL";
-  if (value > 1.2) bias = "BULLISH";
-  else if (value < 0.8) bias = "BEARISH";
+  if (value > 1.05) bias = "BULLISH";
+  else if (value < 0.95) bias = "BEARISH";
 
   return { value, bias, callOI: totalCallOI, putOI: totalPutOI };
 }
 
-/**
- * OI Buildup matrix:
- * Price ↑ + OI ↑ → Long Buildup
- * Price ↓ + OI ↑ → Short Buildup
- * Price ↑ + OI ↓ → Short Covering
- * Price ↓ + OI ↓ → Long Unwinding
- */
 export function computeOIBuildup(
   data: OptionChainRow[],
   underlyingValue: number
@@ -137,9 +132,6 @@ export function computeOIBuildup(
   });
 }
 
-/**
- * Max Pain = strike with minimum total payout for option writers
- */
 export function computeMaxPain(
   data: OptionChainRow[],
   underlyingValue: number
@@ -164,19 +156,15 @@ export function computeMaxPain(
   return payouts.sort((a, b) => a.totalPayout - b.totalPayout);
 }
 
-/** T1/T2/T3 multipliers (Pine script defaults) */
 const T1_RR = 1.36;
 const T2_RR = 2.73;
 const T3_RR = 4.55;
 const TRAIL_ATR_MULT = 0.5;
 
-/**
- * Compute T1, T2, T3, SL, Trailing Stop from entry and ATR
- */
 export function computeTargetsStops(
   entry: number,
   atr: number,
-  bias: StrategySignal["bias"],
+  bias: "BULLISH" | "BEARISH" | "NEUTRAL",
   strikeStep = 50
 ): TargetsStops {
   const slPoints = Math.max(atr * 1.1, strikeStep);
@@ -227,50 +215,47 @@ export function computeTargetsStops(
   };
 }
 
-/**
- * Options Advisor: strike, premium, delta from Pine logic
- */
 export function computeOptionsAdvisor(
   underlying: number,
   atr: number,
-  bias: StrategySignal["bias"],
+  bias: "BULLISH" | "BEARISH" | "NEUTRAL",
   strikeStep = 50,
-  mode: "High Delta" | "ATM" | "OTM Aggressive" | "Balanced" = "Balanced"
+  mode: "High Delta" | "ATM" | "OTM Aggressive" | "Balanced" = "Balanced",
+  greekDelta?: number
 ): OptionsAdvisor {
   const baseStrike = Math.round(underlying / strikeStep) * strikeStep;
-  const isBullish = bias === "BULLISH";
-  const isBearish = bias === "BEARISH";
+
+  // For NEUTRAL, recommend ATM CE (slight bullish lean) or straddle-style
+  const effectiveBias = bias === "NEUTRAL" ? "BULLISH" : bias;
+  const isBullish = effectiveBias === "BULLISH";
+  const isBearish = effectiveBias === "BEARISH";
 
   const strikeShift =
     mode === "High Delta"
-      ? isBullish ? -strikeStep : isBearish ? strikeStep : 0
+      ? isBullish ? -strikeStep : strikeStep
       : mode === "ATM"
         ? 0
         : mode === "OTM Aggressive"
-          ? isBullish ? strikeStep : isBearish ? -strikeStep : 0
-          : isBullish ? strikeStep * 0.5 : isBearish ? -strikeStep * 0.5 : 0;
+          ? isBullish ? strikeStep : -strikeStep
+          : isBullish ? strikeStep * 0.5 : -strikeStep * 0.5;
 
   const strike = Math.round((baseStrike + strikeShift) / strikeStep) * strikeStep;
   const premium = Math.max(20, atr * 0.6 + Math.abs(strike - underlying) * 0.25);
 
-  const deltaMap =
-    mode === "High Delta" ? 0.7 : mode === "ATM" ? 0.5 : mode === "OTM Aggressive" ? 0.3 : 0.45;
-  const delta = isBullish ? deltaMap : isBearish ? -deltaMap : 0;
+  const computedDelta = mode === "High Delta" ? 0.7 : mode === "ATM" ? 0.5 : mode === "OTM Aggressive" ? 0.3 : 0.45;
+  const delta = greekDelta ?? (isBullish ? computedDelta : -computedDelta);
 
   const side: OptionsAdvisor["side"] =
-    isBullish ? "CALL" : isBearish ? "PUT" : "BALANCED";
+    bias === "NEUTRAL" ? "BALANCED" : isBullish ? "CALL" : "PUT";
 
   const now = new Date();
   const day = now.getDay();
-  const daysToTuesday = (2 - day + 7) % 7;
-  const daysToExpiry = daysToTuesday === 0 ? 7 : daysToTuesday;
+  const daysToThursday = (4 - day + 7) % 7;
+  const daysToExpiry = daysToThursday === 0 ? 7 : daysToThursday;
 
-  return { strike, side, premium, delta, mode, daysToExpiry };
+  return { strike, side, premium: Math.round(premium), delta: parseFloat(delta.toFixed(4)), mode, daysToExpiry };
 }
 
-/**
- * S/R Levels from PDH, PDL, PDC (Pivot, CPR, R1/R2/S1/S2, Camarilla)
- */
 export function computeSRLevels(pdh: number, pdl: number, pdc: number): SRLevels {
   const pivot = (pdh + pdl + pdc) / 3;
   const cprTC = (pdh + pdl) / 2;
@@ -286,58 +271,137 @@ export function computeSRLevels(pdh: number, pdl: number, pdc: number): SRLevels
   const camH3 = pdc + camRange / 4;
   const camL3 = pdc - camRange / 4;
 
-  return {
-    pdh,
-    pdl,
-    pdc,
-    pivot,
-    cprTC,
-    cprBC,
-    r1,
-    r2,
-    s1,
-    s2,
-    camH3,
-    camL3,
-  };
+  return { pdh, pdl, pdc, pivot, cprTC, cprBC, r1, r2, s1, s2, camH3, camL3 };
 }
 
 /**
- * Sentiment from PCR (simplified; full version uses RSI/MACD/EMA)
+ * Multi-factor sentiment combining PCR + price action + OI buildup
  */
-export function computeSentiment(pcrValue: number): Sentiment {
-  const score = pcrValue > 1.2 ? 60 : pcrValue < 0.8 ? -60 : (pcrValue - 1) * 100;
+export function computeSentiment(
+  pcrValue: number,
+  priceAction?: { ltp: number; open: number; prevClose: number; high: number; low: number },
+  oiData?: { longCount: number; shortCount: number }
+): Sentiment {
+  // PCR component: -100 to +100
+  let pcrScore = 0;
+  if (pcrValue > 1.2) pcrScore = 60;
+  else if (pcrValue > 1.05) pcrScore = 30;
+  else if (pcrValue < 0.8) pcrScore = -60;
+  else if (pcrValue < 0.95) pcrScore = -30;
+  else pcrScore = (pcrValue - 1) * 200; // -10 to +10 for 0.95-1.05
+
+  // Price action component
+  let priceScore = 0;
+  if (priceAction) {
+    const { ltp, open, prevClose } = priceAction;
+    const changeFromPrevClose = ((ltp - prevClose) / prevClose) * 100;
+    const changeFromOpen = ((ltp - open) / open) * 100;
+    // Each can contribute ±20 points
+    priceScore = Math.max(-40, Math.min(40, changeFromPrevClose * 20 + changeFromOpen * 10));
+  }
+
+  // OI Buildup component
+  let oiScore = 0;
+  if (oiData && (oiData.longCount + oiData.shortCount) > 0) {
+    const netOI = oiData.longCount - oiData.shortCount;
+    oiScore = Math.max(-20, Math.min(20, netOI * 5));
+  }
+
+  const rawScore = pcrScore + priceScore + oiScore;
+  const score = Math.max(-100, Math.min(100, Math.round(rawScore)));
+
   const side =
-    score >= 60 ? "STRONG BUY" : score >= 20 ? "BUY" : score <= -60 ? "STRONG SELL" : score <= -20 ? "SELL" : "NEUTRAL";
-  const optionsBias = score > 20 ? "Call Bias" : score < -20 ? "Put Bias" : "Balanced";
+    score >= 60 ? "STRONG BUY" :
+    score >= 30 ? "BUY" :
+    score >= 10 ? "MILD BUY" :
+    score <= -60 ? "STRONG SELL" :
+    score <= -30 ? "SELL" :
+    score <= -10 ? "MILD SELL" :
+    "NEUTRAL";
+
+  const optionsBias =
+    score >= 30 ? "Call Bias" :
+    score >= 10 ? "Slight Call Bias" :
+    score <= -30 ? "Put Bias" :
+    score <= -10 ? "Slight Put Bias" :
+    "Balanced";
+
   return { score, side, optionsBias };
 }
 
-/** Fallback ATR when no candle data (≈0.8% of price for NIFTY) */
+/**
+ * Multi-factor bias: combines PCR + price action for better directional signal
+ */
+export function computeMultiFactorBias(
+  pcrValue: number,
+  priceAction?: { ltp: number; open: number; prevClose: number },
+): { bias: "BULLISH" | "BEARISH" | "NEUTRAL"; strength: "STRONG" | "MODERATE" | "MILD" | "NEUTRAL"; confidence: number } {
+  let bullPoints = 0;
+  let bearPoints = 0;
+
+  // PCR signal (strongest weight)
+  if (pcrValue > 1.2) bullPoints += 3;
+  else if (pcrValue > 1.05) bullPoints += 2;
+  else if (pcrValue > 1.0) bullPoints += 1;
+  if (pcrValue < 0.8) bearPoints += 3;
+  else if (pcrValue < 0.95) bearPoints += 2;
+  else if (pcrValue < 1.0) bearPoints += 1;
+
+  // Price action signals
+  if (priceAction) {
+    const { ltp, open, prevClose } = priceAction;
+    // LTP vs prev close
+    if (ltp > prevClose * 1.003) bullPoints += 2;
+    else if (ltp > prevClose) bullPoints += 1;
+    if (ltp < prevClose * 0.997) bearPoints += 2;
+    else if (ltp < prevClose) bearPoints += 1;
+
+    // LTP vs today's open
+    if (ltp > open * 1.002) bullPoints += 1;
+    if (ltp < open * 0.998) bearPoints += 1;
+
+    // Gap analysis
+    if (open > prevClose * 1.003) bullPoints += 1; // gap up
+    if (open < prevClose * 0.997) bearPoints += 1; // gap down
+  }
+
+  const net = bullPoints - bearPoints;
+  const total = bullPoints + bearPoints;
+  const baseConfidence = total > 0 ? Math.round((Math.abs(net) / total) * 50 + 50) : 50;
+
+  if (net >= 4) return { bias: "BULLISH", strength: "STRONG", confidence: Math.min(90, baseConfidence) };
+  if (net >= 2) return { bias: "BULLISH", strength: "MODERATE", confidence: baseConfidence };
+  if (net >= 1) return { bias: "BULLISH", strength: "MILD", confidence: baseConfidence };
+  if (net <= -4) return { bias: "BEARISH", strength: "STRONG", confidence: Math.min(90, baseConfidence) };
+  if (net <= -2) return { bias: "BEARISH", strength: "MODERATE", confidence: baseConfidence };
+  if (net <= -1) return { bias: "BEARISH", strength: "MILD", confidence: baseConfidence };
+
+  return { bias: "NEUTRAL", strength: "NEUTRAL", confidence: 50 };
+}
+
 const FALLBACK_ATR_PCT = 0.008;
-/** Fallback PDH/PDL range when no prior day data */
 const FALLBACK_RANGE_PCT = 0.006;
 
+export interface GenerateSignalOpts {
+  pdh?: number;
+  pdl?: number;
+  pdc?: number;
+  atr?: number;
+  strikeStep?: number;
+  greekDelta?: number;
+  priceAction?: { ltp: number; open: number; prevClose: number; high: number; low: number };
+  oiData?: { longCount: number; shortCount: number };
+}
+
 /**
- * Generate intraday bias and signal from PCR value only (e.g. from Angel One)
+ * Generate signal from PCR with multi-factor bias
  */
 export function generateSignalFromPCR(
   pcrValue: number,
   underlyingValue: number,
   maxPainStrike?: number,
-  opts?: { pdh?: number; pdl?: number; pdc?: number; atr?: number; strikeStep?: number; greekDelta?: number }
+  opts?: GenerateSignalOpts
 ): StrategySignal {
-  let bias: StrategySignal["bias"] = "NEUTRAL";
-  if (pcrValue > 1.2) bias = "BULLISH";
-  else if (pcrValue < 0.8) bias = "BEARISH";
-
-  const pcr: PCRResult = {
-    value: pcrValue,
-    bias,
-    callOI: 0,
-    putOI: 0,
-  };
-
   const mp = maxPainStrike ?? underlyingValue;
   const atr = opts?.atr ?? underlyingValue * FALLBACK_ATR_PCT;
   const pdh = opts?.pdh ?? underlyingValue * (1 + FALLBACK_RANGE_PCT);
@@ -345,17 +409,38 @@ export function generateSignalFromPCR(
   const pdc = opts?.pdc ?? underlyingValue;
   const strikeStep = opts?.strikeStep ?? 50;
 
-  return generateSignal(pcr, mp, underlyingValue, { atr, pdh, pdl, pdc, strikeStep, greekDelta: opts?.greekDelta });
+  // Use multi-factor bias instead of PCR-only
+  const { bias, strength, confidence } = computeMultiFactorBias(pcrValue, opts?.priceAction);
+
+  const pcr: PCRResult = {
+    value: pcrValue,
+    bias: pcrValue > 1.05 ? "BULLISH" : pcrValue < 0.95 ? "BEARISH" : "NEUTRAL",
+    callOI: 0,
+    putOI: 0,
+  };
+
+  return generateSignal(pcr, mp, underlyingValue, {
+    ...opts,
+    atr,
+    pdh,
+    pdl,
+    pdc,
+    strikeStep,
+    overrideBias: bias,
+    overrideStrength: strength,
+    overrideConfidence: confidence,
+  });
 }
 
-/**
- * Generate intraday bias and signal from PCR + OI
- */
 export function generateSignal(
   pcr: PCRResult,
   maxPainStrike: number,
   underlyingValue: number,
-  opts?: { atr?: number; pdh?: number; pdl?: number; pdc?: number; strikeStep?: number; greekDelta?: number }
+  opts?: GenerateSignalOpts & {
+    overrideBias?: "BULLISH" | "BEARISH" | "NEUTRAL";
+    overrideStrength?: "STRONG" | "MODERATE" | "MILD" | "NEUTRAL";
+    overrideConfidence?: number;
+  }
 ): StrategySignal {
   const strikeStep = opts?.strikeStep ?? 50;
   const atr = opts?.atr ?? underlyingValue * FALLBACK_ATR_PCT;
@@ -363,32 +448,39 @@ export function generateSignal(
   const pdl = opts?.pdl ?? underlyingValue * (1 - FALLBACK_RANGE_PCT);
   const pdc = opts?.pdc ?? underlyingValue;
 
+  const bias = opts?.overrideBias ?? pcr.bias;
+  const biasStrength = opts?.overrideStrength ?? (bias === "NEUTRAL" ? "NEUTRAL" : "MODERATE");
+  const confidence = opts?.overrideConfidence ?? 50;
+
   const entry = underlyingValue;
-  const targets = computeTargetsStops(entry, atr, pcr.bias, strikeStep);
-  let optionsAdvisor = computeOptionsAdvisor(
+
+  // Always compute targets for the active bias
+  const targets = computeTargetsStops(entry, atr, bias, strikeStep);
+
+  // Also compute both-side targets so the UI can show them when NEUTRAL
+  const bullishTargets = computeTargetsStops(entry, atr, "BULLISH", strikeStep);
+  const bearishTargets = computeTargetsStops(entry, atr, "BEARISH", strikeStep);
+
+  const optionsAdvisor = computeOptionsAdvisor(
     underlyingValue,
     atr,
-    pcr.bias,
+    bias,
     strikeStep,
-    "Balanced"
+    "Balanced",
+    opts?.greekDelta
   );
-  if (opts?.greekDelta != null) {
-    optionsAdvisor = { ...optionsAdvisor, delta: opts.greekDelta };
-  }
+
   const srLevels = computeSRLevels(pdh, pdl, pdc);
-  const sentiment = computeSentiment(pcr.value);
+  const sentiment = computeSentiment(pcr.value, opts?.priceAction, opts?.oiData);
 
-  let confidence = 50;
-  if (pcr.value > 1.3 || pcr.value < 0.7) confidence = 75;
-  if (pcr.value > 1.5 || pcr.value < 0.5) confidence = 85;
+  const strengthLabel = biasStrength !== "NEUTRAL" ? ` (${biasStrength})` : "";
+  const biasLabel = bias === "NEUTRAL" ? "Sideways" : bias;
 
-  const summary =
-    pcr.bias === "NEUTRAL"
-      ? `PCR ${pcr.value.toFixed(2)} - Neutral. Max Pain: ${maxPainStrike}`
-      : `PCR ${pcr.value.toFixed(2)} - ${pcr.bias}. Max Pain: ${maxPainStrike}`;
+  const summary = `${biasLabel}${strengthLabel} | PCR ${pcr.value.toFixed(2)} | Max Pain: ${maxPainStrike} | Confidence: ${confidence}%`;
 
   return {
-    bias: pcr.bias,
+    bias,
+    biasStrength,
     entry,
     stopLoss: targets.stopLoss,
     target: targets.t3,
@@ -400,7 +492,9 @@ export function generateSignal(
     pcr,
     maxPain: maxPainStrike,
     summary,
-    targets,
+    targets: bias !== "NEUTRAL" ? targets : undefined,
+    bullishTargets,
+    bearishTargets,
     optionsAdvisor,
     srLevels,
     sentiment,
