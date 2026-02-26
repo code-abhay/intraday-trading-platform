@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
+import Link from "next/link";
 import { Sidebar } from "@/components/sidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
@@ -12,6 +13,13 @@ function Footer() {
   return (
     <footer className="border-t border-zinc-800/60 bg-zinc-950 px-6 py-5">
       <div className="max-w-7xl mx-auto flex flex-col items-center gap-3 text-xs text-zinc-500 text-center">
+        <div className="flex items-center gap-3">
+          <Link href="/terms" className="hover:text-zinc-300 transition-colors">Terms</Link>
+          <span className="text-zinc-700">·</span>
+          <Link href="/privacy" className="hover:text-zinc-300 transition-colors">Privacy</Link>
+          <span className="text-zinc-700">·</span>
+          <Link href="/disclaimer" className="hover:text-zinc-300 transition-colors">Disclaimer</Link>
+        </div>
         <p>&copy; {new Date().getFullYear()} Abhay Kumar. All rights reserved.</p>
         <div className="flex items-center gap-4">
           <a href="mailto:abhayk2193@gmail.com" className="hover:text-zinc-300 transition-colors">
