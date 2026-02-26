@@ -138,6 +138,7 @@ interface SignalsResponse {
   signal: Signal;
   rawPCR?: number;
   pcrSymbol?: string;
+  expiry?: string;
   maxPain: { strike: number; totalPayout: number }[];
   oiTable?: OITableRow[];
   oiBuildupLong?: OIBuildupItem[];
@@ -159,6 +160,10 @@ export interface SuggestedTrade {
   t2: number;
   t3: number;
   trailingStop: number;
+  strike?: number;
+  optionSide?: string;
+  premium?: number;
+  expiry?: string;
   status: TradeStatus;
   createdAt: string;
 }
@@ -398,55 +403,31 @@ export default function Home() {
 
           {/* Signal Section */}
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-            <div className="flex items-start justify-between gap-4">
-              <div>
-                <h2 className="text-lg font-semibold text-emerald-400 mb-2">Signal</h2>
-                <p className="text-zinc-300">
-                  {data ? data.signal.summary : (loading ? "Loading..." : "No data — login during market hours or retry.")}
-                </p>
-                {sig && (
-                  <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                    {sig.entry != null && (
-                      <span>Entry: <strong>{sig.entry.toFixed(2)}</strong></span>
-                    )}
-                    {sig.bias !== "NEUTRAL" && sig.stopLoss != null && (
-                      <span>SL: <strong className="text-red-400">{sig.stopLoss}</strong></span>
-                    )}
-                    {sig.bias !== "NEUTRAL" && sig.target != null && (
-                      <span>T3: <strong className="text-emerald-400">{sig.target}</strong></span>
-                    )}
-                    <span>Confidence: <strong>{sig.confidence}%</strong></span>
-                  </div>
+            <div>
+              <div className="flex items-center gap-3 mb-2">
+                <h2 className="text-lg font-semibold text-emerald-400">Signal</h2>
+                {data?.expiry && (
+                  <span className="rounded bg-zinc-800 px-2 py-0.5 text-xs text-zinc-400">
+                    Expiry: {data.expiry}
+                  </span>
                 )}
               </div>
-              {sig?.targets && sig.bias !== "NEUTRAL" && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (!data) return;
-                    const seg = SEGMENTS.find((s) => s.id === data.symbol) ?? SEGMENTS[0];
-                    const t: SuggestedTrade = {
-                      id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                      symbol: data.symbol,
-                      segmentLabel: seg.label,
-                      bias: sig.bias,
-                      entry: sig.targets!.entry,
-                      stopLoss: sig.targets!.stopLoss,
-                      t1: sig.targets!.t1,
-                      t2: sig.targets!.t2,
-                      t3: sig.targets!.t3,
-                      trailingStop: sig.targets!.trailingStop,
-                      status: "OPEN",
-                      createdAt: new Date().toISOString(),
-                    };
-                    const next = [t, ...trades];
-                    setTrades(next);
-                    saveTrades(next);
-                  }}
-                  className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
-                >
-                  Add to Trades
-                </button>
+              <p className="text-zinc-300">
+                {data ? data.signal.summary : (loading ? "Loading..." : "No data — login during market hours or retry.")}
+              </p>
+              {sig && (
+                <div className="mt-3 flex flex-wrap gap-4 text-sm">
+                  {sig.entry != null && (
+                    <span>Entry: <strong>{sig.entry.toFixed(2)}</strong></span>
+                  )}
+                  {sig.bias !== "NEUTRAL" && sig.stopLoss != null && (
+                    <span>SL: <strong className="text-red-400">{sig.stopLoss}</strong></span>
+                  )}
+                  {sig.bias !== "NEUTRAL" && sig.target != null && (
+                    <span>T3: <strong className="text-emerald-400">{sig.target}</strong></span>
+                  )}
+                  <span>Confidence: <strong>{sig.confidence}%</strong></span>
+                </div>
               )}
             </div>
           </div>
@@ -462,13 +443,13 @@ export default function Home() {
                   <thead>
                     <tr className="text-left text-zinc-500 border-b border-zinc-700">
                       <th className="py-2 px-2">Segment</th>
-                      <th className="py-2 px-2">Bias</th>
+                      <th className="py-2 px-2">Option</th>
+                      <th className="py-2 px-2">Premium</th>
                       <th className="py-2 px-2">Entry</th>
                       <th className="py-2 px-2">SL</th>
                       <th className="py-2 px-2">T1</th>
                       <th className="py-2 px-2">T2</th>
                       <th className="py-2 px-2">T3</th>
-                      <th className="py-2 px-2">Trail SL</th>
                       <th className="py-2 px-2">Status</th>
                       <th className="py-2 px-2">Actions</th>
                     </tr>
@@ -477,13 +458,16 @@ export default function Home() {
                     {trades.map((t) => (
                       <tr key={t.id} className="border-b border-zinc-800 hover:bg-zinc-800/50">
                         <td className="py-2 px-2 font-medium">{t.segmentLabel}</td>
-                        <td className={`py-2 px-2 font-medium ${t.bias === "BULLISH" ? "text-emerald-400" : t.bias === "BEARISH" ? "text-red-400" : ""}`}>{t.bias}</td>
+                        <td className={`py-2 px-2 font-medium ${t.optionSide === "CALL" ? "text-emerald-400" : t.optionSide === "PUT" ? "text-red-400" : ""}`}>
+                          {t.strike ? `${t.strike} ${t.optionSide ?? t.bias}` : t.bias}
+                          {t.expiry && <span className="text-zinc-500 text-xs block">{t.expiry}</span>}
+                        </td>
+                        <td className="py-2 px-2">{t.premium ? `₹${t.premium}` : "—"}</td>
                         <td className="py-2 px-2">{t.entry}</td>
                         <td className="py-2 px-2 text-red-400">{t.stopLoss}</td>
                         <td className="py-2 px-2 text-emerald-400">{t.t1}</td>
                         <td className="py-2 px-2 text-emerald-400">{t.t2}</td>
                         <td className="py-2 px-2 text-emerald-400">{t.t3}</td>
-                        <td className="py-2 px-2 text-amber-400">{t.trailingStop}</td>
                         <td className="py-2 px-2">
                           <span className={`rounded px-2 py-0.5 text-xs font-medium ${
                             t.status === "OPEN" ? "bg-emerald-900/50 text-emerald-400" :
@@ -531,6 +515,100 @@ export default function Home() {
               </div>
             )}
           </div>
+
+          {/* Options Advisor — with Add to Trade */}
+          {sig?.optionsAdvisor && (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
+                  <h2 className="text-lg font-semibold text-emerald-400">Options Advisor</h2>
+                  <span className={`rounded px-2 py-0.5 text-xs font-medium ${
+                    sig.optionsAdvisor.side === "CALL" ? "bg-emerald-900/50 text-emerald-400" :
+                    sig.optionsAdvisor.side === "PUT" ? "bg-red-900/50 text-red-400" :
+                    "bg-zinc-700 text-zinc-400"
+                  }`}>
+                    {sig.optionsAdvisor.recommendation}
+                  </span>
+                </div>
+                {sig.bias !== "NEUTRAL" && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (!data || !sig.optionsAdvisor) return;
+                      const segCfg = SEGMENTS.find((s) => s.id === data.symbol) ?? SEGMENTS[0];
+                      const advisor = sig.optionsAdvisor!;
+                      const targets = sig.targets ?? sig.bullishTargets;
+                      const t: SuggestedTrade = {
+                        id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+                        symbol: data.symbol,
+                        segmentLabel: segCfg.label,
+                        bias: sig.bias,
+                        entry: targets?.entry ?? data.underlyingValue,
+                        stopLoss: targets?.stopLoss ?? 0,
+                        t1: targets?.t1 ?? 0,
+                        t2: targets?.t2 ?? 0,
+                        t3: targets?.t3 ?? 0,
+                        trailingStop: targets?.trailingStop ?? 0,
+                        strike: advisor.strike,
+                        optionSide: advisor.side,
+                        premium: advisor.premium,
+                        expiry: data.expiry,
+                        status: "OPEN",
+                        createdAt: new Date().toISOString(),
+                      };
+                      const next = [t, ...trades];
+                      setTrades(next);
+                      saveTrades(next);
+                    }}
+                    className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
+                  >
+                    Add to Trades
+                  </button>
+                )}
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                <div className="rounded bg-zinc-800 px-3 py-2">
+                  <span className="text-zinc-500 text-xs">Strike</span>
+                  <div className={`font-bold text-lg ${
+                    sig.optionsAdvisor.side === "CALL" ? "text-emerald-400" :
+                    sig.optionsAdvisor.side === "PUT" ? "text-red-400" :
+                    "text-amber-400"
+                  }`}>
+                    {sig.optionsAdvisor.strike} {sig.optionsAdvisor.side === "BALANCED" ? "CE/PE" : sig.optionsAdvisor.side}
+                  </div>
+                  <span className="text-zinc-600 text-xs">{sig.optionsAdvisor.moneyness}</span>
+                </div>
+                <div className="rounded bg-zinc-800 px-3 py-2">
+                  <span className="text-zinc-500 text-xs">Premium (approx)</span>
+                  <div className="font-bold text-lg">₹{sig.optionsAdvisor.premium}</div>
+                  <span className="text-zinc-600 text-xs">Mode: {sig.optionsAdvisor.mode}</span>
+                </div>
+                <div className="rounded bg-zinc-800 px-3 py-2">
+                  <span className="text-zinc-500 text-xs">Delta</span>
+                  <div className="font-bold text-lg">{sig.optionsAdvisor.delta !== 0 ? sig.optionsAdvisor.delta.toFixed(4) : "—"}</div>
+                  <span className="text-zinc-600 text-xs">IV: {sig.optionsAdvisor.iv}%</span>
+                </div>
+                <div className="rounded bg-zinc-800 px-3 py-2">
+                  <span className="text-zinc-500 text-xs">Expiry</span>
+                  <div className="font-bold text-lg">
+                    {data?.expiry ? data.expiry : `${sig.optionsAdvisor.daysToExpiry}d`}
+                  </div>
+                  <span className={`text-xs ${
+                    sig.optionsAdvisor.daysToExpiry >= 3 ? "text-emerald-500" :
+                    sig.optionsAdvisor.daysToExpiry >= 1 ? "text-amber-500" :
+                    "text-red-500"
+                  }`}>
+                    {sig.optionsAdvisor.daysToExpiry}d · Theta: {sig.optionsAdvisor.theta}/day
+                  </span>
+                </div>
+              </div>
+              {sig.bias === "NEUTRAL" && (
+                <p className="mt-2 text-xs text-zinc-500">
+                  Market is sideways — consider straddle/strangle strategy or wait for directional bias.
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Targets & Stops */}
           {sig && (
@@ -607,60 +685,7 @@ export default function Home() {
             </div>
           )}
 
-          {/* Options Advisor — Enhanced */}
-          {sig?.optionsAdvisor && (
-            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-              <div className="flex items-center justify-between mb-3">
-                <h2 className="text-lg font-semibold text-emerald-400">Options Advisor</h2>
-                <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                  sig.optionsAdvisor.side === "CALL" ? "bg-emerald-900/50 text-emerald-400" :
-                  sig.optionsAdvisor.side === "PUT" ? "bg-red-900/50 text-red-400" :
-                  "bg-zinc-700 text-zinc-400"
-                }`}>
-                  {sig.optionsAdvisor.recommendation}
-                </span>
-              </div>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-                <div className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Strike</span>
-                  <div className={`font-bold text-lg ${
-                    sig.optionsAdvisor.side === "CALL" ? "text-emerald-400" :
-                    sig.optionsAdvisor.side === "PUT" ? "text-red-400" :
-                    "text-amber-400"
-                  }`}>
-                    {sig.optionsAdvisor.strike} {sig.optionsAdvisor.side === "BALANCED" ? "CE/PE" : sig.optionsAdvisor.side}
-                  </div>
-                  <span className="text-zinc-600 text-xs">{sig.optionsAdvisor.moneyness}</span>
-                </div>
-                <div className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Premium (approx)</span>
-                  <div className="font-bold text-lg">₹{sig.optionsAdvisor.premium}</div>
-                  <span className="text-zinc-600 text-xs">Mode: {sig.optionsAdvisor.mode}</span>
-                </div>
-                <div className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Delta</span>
-                  <div className="font-bold text-lg">{sig.optionsAdvisor.delta !== 0 ? sig.optionsAdvisor.delta.toFixed(4) : "—"}</div>
-                  <span className="text-zinc-600 text-xs">IV: {sig.optionsAdvisor.iv}%</span>
-                </div>
-                <div className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Expiry</span>
-                  <div className="font-bold text-lg">{sig.optionsAdvisor.daysToExpiry}d</div>
-                  <span className={`text-xs ${
-                    sig.optionsAdvisor.daysToExpiry >= 3 ? "text-emerald-500" :
-                    sig.optionsAdvisor.daysToExpiry >= 1 ? "text-amber-500" :
-                    "text-red-500"
-                  }`}>
-                    Theta: {sig.optionsAdvisor.theta}/day
-                  </span>
-                </div>
-              </div>
-              {sig.bias === "NEUTRAL" && (
-                <p className="mt-2 text-xs text-zinc-500">
-                  Market is sideways — consider straddle/strangle strategy or wait for directional bias.
-                </p>
-              )}
-            </div>
-          )}
+          {/* (Options Advisor is above, next to Signal) */}
 
           {/* S/R Levels */}
           {sig?.srLevels && (

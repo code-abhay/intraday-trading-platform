@@ -1,21 +1,29 @@
 /**
  * Segment config for NIFTY, BANKNIFTY, SENSEX, MIDCPNIFTY
  * Angel One tokens from OpenAPIScripMaster.json
- * NSE option chain: NIFTY, BANKNIFTY, MIDCPNIFTY (SENSEX is BSE - no NSE option chain)
+ *
+ * Weekly expiry days (0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat):
+ *   NIFTY      → Tuesday  (2)
+ *   BANKNIFTY  → Wednesday(3)
+ *   SENSEX     → Friday   (5)
+ *   MIDCPNIFTY → Monday   (1)
  */
+
+import type { ExpiryDay } from "@/lib/expiry-utils";
 
 export type SegmentId = "NIFTY" | "BANKNIFTY" | "SENSEX" | "MIDCPNIFTY";
 
 export interface SegmentConfig {
   id: SegmentId;
   label: string;
-  nseSymbol: string; // NSE option chain symbol (empty if not available)
+  nseSymbol: string;
   angelToken: string;
-  angelSymbol: string; // tradingsymbol for LTP
+  angelSymbol: string;
   angelPCRFilter: (tradingSymbol: string) => boolean;
   exchange: "NSE" | "BSE";
   strikeStep: number;
-  fallbackLTP: number; // demo/fallback when LTP fails
+  fallbackLTP: number;
+  expiryDay: ExpiryDay;
 }
 
 export const SEGMENTS: SegmentConfig[] = [
@@ -39,6 +47,7 @@ export const SEGMENTS: SegmentConfig[] = [
     exchange: "NSE",
     strikeStep: 50,
     fallbackLTP: 25500,
+    expiryDay: 2, // Tuesday
   },
   {
     id: "BANKNIFTY",
@@ -53,17 +62,19 @@ export const SEGMENTS: SegmentConfig[] = [
     exchange: "NSE",
     strikeStep: 100,
     fallbackLTP: 61000,
+    expiryDay: 3, // Wednesday
   },
   {
     id: "SENSEX",
     label: "SENSEX",
-    nseSymbol: "", // BSE index - no NSE option chain
+    nseSymbol: "",
     angelToken: "99926037",
     angelSymbol: "SENSEX",
     angelPCRFilter: (s) => s.toUpperCase().includes("SENSEX"),
     exchange: "BSE",
     strikeStep: 100,
     fallbackLTP: 82500,
+    expiryDay: 5, // Friday
   },
   {
     id: "MIDCPNIFTY",
@@ -78,6 +89,7 @@ export const SEGMENTS: SegmentConfig[] = [
     exchange: "NSE",
     strikeStep: 25,
     fallbackLTP: 12500,
+    expiryDay: 1, // Monday
   },
 ];
 

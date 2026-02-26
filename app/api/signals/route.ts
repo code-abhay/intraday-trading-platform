@@ -16,7 +16,7 @@ import {
   angelOneGetOIBuildup,
   type AngelOneOptionGreekRow,
 } from "@/lib/angel-one";
-import { getNextWeeklyExpiry, formatExpiryForAngelOne } from "@/lib/expiry-utils";
+import { getExpiryCandidates } from "@/lib/expiry-utils";
 import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
 import { fetchYahooIndexPrice } from "@/lib/yahoo-indices";
 
@@ -324,14 +324,12 @@ async function getSignalsFromAngelOne(
   let greeksData: AngelOneOptionGreekRow[] = [];
   let oiTable: { strike: number; ceOI: number; peOI: number; ceIV?: number; peIV?: number; ceDelta?: number; peDelta?: number }[] = [];
   let greeksMaxPain: { strike: number; totalPayout: number }[] = [];
+  let matchedExpiry = "";
 
   if (segment.exchange === "NSE" || segment.exchange === "BSE") {
-    // Try current week expiry first, then next week
-    const expiries = [getNextWeeklyExpiry()];
-    const now = new Date();
-    const nextThursday = new Date(now);
-    nextThursday.setDate(nextThursday.getDate() + 7 - ((nextThursday.getDay() + 3) % 7));
-    expiries.push(formatExpiryForAngelOne(nextThursday));
+    // Use segment-specific expiry day (NIFTY=Tue, BANKNIFTY=Wed, SENSEX=Fri, MIDCPNIFTY=Mon)
+    const expiries = getExpiryCandidates(segment.expiryDay);
+    console.log(`[signals] Expiry candidates for ${symbol} (day=${segment.expiryDay}):`, expiries);
 
     for (const expiry of expiries) {
       try {
@@ -342,6 +340,7 @@ async function getSignalsFromAngelOne(
           expiry
         );
         if (greeksData.length > 0) {
+          matchedExpiry = expiry;
           console.log(`[signals] Option Greeks success for expiry ${expiry}: ${greeksData.length} rows`);
           break;
         }
@@ -466,6 +465,7 @@ async function getSignalsFromAngelOne(
     signal,
     rawPCR: pcrItem.pcr,
     pcrSymbol: pcrItem.tradingSymbol,
+    expiry: matchedExpiry || "",
     maxPain: greeksMaxPain.length > 0 ? greeksMaxPain : [{ strike: maxPainStrike, totalPayout: 0 }],
     oiTable: oiTable.length > 0 ? oiTable : undefined,
     oiBuildupLong,
