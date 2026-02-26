@@ -104,28 +104,25 @@ export default function PaperTradePage() {
    */
   function processAutoExits(updatedTrades: PaperTrade[]): PaperTrade[] {
     let changed = false;
-    const processed = updatedTrades.map((t) => {
+    const processed: PaperTrade[] = updatedTrades.map((t): PaperTrade => {
       if (t.status !== "OPEN") return t;
       const cp = t.currentPremium;
 
-      // SL hit (use activeSL which moves up after T1)
       if (cp <= t.activeSL) {
         changed = true;
-        const exitStatus = t.t1Reached ? "TRAIL_SL" : "SL_HIT";
+        const exitStatus: PaperTrade["status"] = t.t1Reached ? "TRAIL_SL" : "SL_HIT";
         const pnl = (cp - t.entryPremium) * t.qty * t.lotSize;
         addLog(`${t.segmentLabel} ${t.strike} ${t.side}: ${exitStatus} @ ₹${cp} (Entry ₹${t.entryPremium}, P&L ${pnl >= 0 ? "+" : ""}₹${Math.round(pnl)})`);
-        return { ...t, status: exitStatus as PaperTrade["status"], pnl, exitPremium: cp, closedAt: new Date().toISOString(), exitReason: `Auto ${exitStatus}: Premium ₹${cp} <= SL ₹${t.activeSL}` };
+        return { ...t, status: exitStatus, pnl, exitPremium: cp, closedAt: new Date().toISOString(), exitReason: `Auto ${exitStatus}: Premium ₹${cp} <= SL ₹${t.activeSL}` };
       }
 
-      // T3 hit → full exit
       if (cp >= t.t3Premium) {
         changed = true;
         const pnl = (cp - t.entryPremium) * t.qty * t.lotSize;
         addLog(`${t.segmentLabel} ${t.strike} ${t.side}: T3 HIT @ ₹${cp} (Entry ₹${t.entryPremium}, P&L +₹${Math.round(pnl)})`);
-        return { ...t, status: "T3_HIT", t1Reached: true, t2Reached: true, pnl, exitPremium: cp, closedAt: new Date().toISOString(), exitReason: `Auto T3: Premium ₹${cp} >= T3 ₹${t.t3Premium}` };
+        return { ...t, status: "T3_HIT" as const, t1Reached: true, t2Reached: true, pnl, exitPremium: cp, closedAt: new Date().toISOString(), exitReason: `Auto T3: Premium ₹${cp} >= T3 ₹${t.t3Premium}` };
       }
 
-      // T2 hit → move trail SL higher, mark t2
       if (!t.t2Reached && cp >= t.t2Premium) {
         changed = true;
         const newTrailSL = Math.round(t.t2Premium * 0.9);
@@ -134,7 +131,6 @@ export default function PaperTradePage() {
         return { ...t, t1Reached: true, t2Reached: true, activeSL: newTrailSL, pnl };
       }
 
-      // T1 hit → move SL to trail SL (lock profit)
       if (!t.t1Reached && cp >= t.t1Premium) {
         changed = true;
         const newSL = t.trailSLPremium;
