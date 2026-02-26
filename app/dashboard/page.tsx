@@ -632,7 +632,7 @@ export default function Home() {
                       { label: "ADX Strength", value: data.technicalIndicators.adxProxy.toFixed(1), status: data.technicalIndicators.trendStrength === "STRONG" ? "BULL" : data.technicalIndicators.trendStrength === "WEAK" ? "BEAR" : "NEUTRAL" },
                     ].map((ind) => (
                       <div key={ind.label} className="rounded-lg bg-zinc-800/40 p-3">
-                        <p className="text-[10px] text-zinc-500 uppercase tracking-wider">{ind.label}</p>
+                        <p className="text-[10px] text-zinc-400 uppercase tracking-wider">{ind.label}</p>
                         <p className="text-lg font-bold mt-1 tabular-nums">{ind.value}</p>
                         <Badge variant={ind.status === "BULL" ? "default" : ind.status === "BEAR" ? "destructive" : "secondary"} className="mt-1">
                           {ind.status === "BULL" ? <TrendingUp className="size-3 mr-1" /> : ind.status === "BEAR" ? <TrendingDown className="size-3 mr-1" /> : null}
@@ -642,7 +642,7 @@ export default function Home() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-zinc-500 py-4">Technical indicators not available. Login during market hours.</p>
+                  <p className="text-sm text-zinc-300 py-4">Technical indicators not available. Login during market hours.</p>
                 )}
               </TabsContent>
 
@@ -657,16 +657,16 @@ export default function Home() {
                         { label: "Choppiness", bull: !sig.advancedFilters.isChoppy, bear: false, sub: sig.advancedFilters.isChoppy ? "Ranging" : "Trending" },
                       ].map((f) => (
                         <div key={f.label} className="rounded-lg bg-zinc-800/40 p-3">
-                          <p className="text-[10px] text-zinc-500 uppercase tracking-wider">{f.label}</p>
+                          <p className="text-[10px] text-zinc-400 uppercase tracking-wider">{f.label}</p>
                           <p className={`text-sm font-bold mt-1 ${f.bull ? "text-emerald-400" : f.bear ? "text-red-400" : "text-amber-400"}`}>
                             {f.bull ? "Bullish" : f.bear ? "Bearish" : "Neutral"}
                           </p>
-                          <p className="text-xs text-zinc-600 mt-0.5">{f.sub}</p>
+                          <p className="text-xs text-zinc-400 mt-0.5">{f.sub}</p>
                         </div>
                       ))}
                     </div>
                     <div>
-                      <div className="flex justify-between text-[10px] text-zinc-500 mb-1">
+                      <div className="flex justify-between text-[10px] text-zinc-400 mb-1">
                         <span>Trending</span><span>61.8</span><span>Choppy</span>
                       </div>
                       <div className="h-2 rounded-full bg-zinc-800 overflow-hidden">
@@ -675,13 +675,13 @@ export default function Home() {
                           style={{ width: `${Math.min(100, sig.advancedFilters.choppiness)}%` }}
                         />
                       </div>
-                      <p className="text-xs text-zinc-500 mt-1 text-center">CI: {sig.advancedFilters.choppiness}</p>
+                      <p className="text-xs text-zinc-300 mt-1 text-center">CI: {sig.advancedFilters.choppiness}</p>
                     </div>
                     {sig.signalExpired && <Badge variant="warning">Signal expired — not confirmed in 5 cycles</Badge>}
                     {sig.alternateBlocked && <Badge variant="warning">{sig.alternateReason}</Badge>}
                   </div>
                 ) : (
-                  <p className="text-sm text-zinc-500 py-4">Advanced filters not available.</p>
+                  <p className="text-sm text-zinc-300 py-4">Advanced filters not available.</p>
                 )}
               </TabsContent>
 
@@ -704,7 +704,7 @@ export default function Home() {
                       { label: "Cam L3", value: sig.srLevels.camL3, variant: "red" as const },
                     ].map((l) => (
                       <div key={l.label} className="rounded-lg bg-zinc-800/40 px-3 py-2 flex justify-between items-center">
-                        <span className="text-xs text-zinc-500">{l.label}</span>
+                        <span className="text-xs text-zinc-400">{l.label}</span>
                         <span className={`font-semibold text-sm tabular-nums ${
                           l.variant === "emerald" ? "text-emerald-400" :
                           l.variant === "red" ? "text-red-400" : "text-zinc-200"
@@ -713,7 +713,7 @@ export default function Home() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm text-zinc-500 py-4">S/R levels not available.</p>
+                  <p className="text-sm text-zinc-300 py-4">S/R levels not available.</p>
                 )}
               </TabsContent>
 
@@ -732,7 +732,7 @@ export default function Home() {
                         <Badge variant={sig.sentiment.side.includes("BUY") ? "default" : sig.sentiment.side.includes("SELL") ? "destructive" : "secondary"}>
                           {sig.sentiment.side}
                         </Badge>
-                        <p className="text-xs text-zinc-500 mt-1">{sig.sentiment.optionsBias} · Momentum: {sig.sentiment.momentum}</p>
+                        <p className="text-xs text-zinc-400 mt-1">{sig.sentiment.optionsBias} · Momentum: {sig.sentiment.momentum}</p>
                       </div>
                     </div>
                     {sig.sentiment.components?.length > 0 && (
@@ -740,7 +740,7 @@ export default function Home() {
                         {sig.sentiment.components.map((c) => (
                           <div key={c.name} className="flex items-center justify-between rounded-lg bg-zinc-800/40 px-3 py-2">
                             <span className="text-xs text-zinc-400">{c.name}</span>
-                            <span className={`text-xs font-semibold ${c.score > 0 ? "text-emerald-400" : c.score < 0 ? "text-red-400" : "text-zinc-500"}`}>
+                            <span className={`text-xs font-semibold ${c.score > 0 ? "text-emerald-400" : c.score < 0 ? "text-red-400" : "text-zinc-400"}`}>
                               {c.score > 0 ? "+" : ""}{c.score}
                             </span>
                           </div>
@@ -749,7 +749,7 @@ export default function Home() {
                     )}
                   </div>
                 ) : (
-                  <p className="text-sm text-zinc-500 py-4">Sentiment data not available.</p>
+                  <p className="text-sm text-zinc-300 py-4">Sentiment data not available.</p>
                 )}
               </TabsContent>
             </Tabs>

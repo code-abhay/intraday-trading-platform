@@ -118,3 +118,8 @@ body {
   mask-composite: exclude;
   padding: 1px;
 }
+
+/* Global readability lift for muted zinc text on dark theme. */
+.text-zinc-500 { color: #a1a1aa; } /* zinc-400 */
+.text-zinc-600 { color: #71717a; } /* zinc-500 */
+.text-zinc-700 { color: #52525b; } /* zinc-600 */
