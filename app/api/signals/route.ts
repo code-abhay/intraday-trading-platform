@@ -10,6 +10,7 @@ import {
 import type { OptionChainRow } from "@/app/api/option-chain/route";
 import { angelOneGetPCR, angelOneGetLTP } from "@/lib/angel-one";
 import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
+import { fetchYahooIndexPrice } from "@/lib/yahoo-indices";
 
 const JWT_COOKIE = "angel_jwt";
 
@@ -200,7 +201,9 @@ export async function GET(request: NextRequest) {
   }
 
   // Demo data when both fail (or SENSEX which has no NSE option chain)
-  const uv = segment.fallbackLTP;
+  // Try Yahoo Finance for live price; fallback to static value
+  const yahooPrice = await fetchYahooIndexPrice(symbol);
+  const uv = yahooPrice ?? segment.fallbackLTP;
   const step = segment.strikeStep;
   const demoSignal = generateSignalFromPCR(1.0, uv, uv, {
     strikeStep: step,

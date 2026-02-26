@@ -31,7 +31,7 @@ export const SEGMENTS: SegmentConfig[] = [
     },
     exchange: "NSE",
     strikeStep: 50,
-    fallbackLTP: 24500,
+    fallbackLTP: 25500,
   },
   {
     id: "BANKNIFTY",
@@ -45,7 +45,7 @@ export const SEGMENTS: SegmentConfig[] = [
     },
     exchange: "NSE",
     strikeStep: 100,
-    fallbackLTP: 52000,
+    fallbackLTP: 61000,
   },
   {
     id: "SENSEX",
@@ -56,7 +56,7 @@ export const SEGMENTS: SegmentConfig[] = [
     angelPCRFilter: (s) => s.toUpperCase().includes("SENSEX"),
     exchange: "BSE",
     strikeStep: 100,
-    fallbackLTP: 72000,
+    fallbackLTP: 82500,
   },
   {
     id: "MIDCPNIFTY",
