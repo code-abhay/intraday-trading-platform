@@ -844,8 +844,9 @@ export default function Home() {
 
 function LogoutButton() {
   const handleLogout = async () => {
-    await fetch("/api/angel-one/logout", { method: "POST" });
-    window.location.reload();
+    await fetch("/api/angel-one/logout", { method: "POST" }).catch(() => {});
+    await fetch("/api/auth", { method: "DELETE" }).catch(() => {});
+    window.location.href = "/auth";
   };
   return (
     <button type="button" onClick={handleLogout} className="rounded-lg border border-zinc-700 px-3 py-2 text-sm text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">

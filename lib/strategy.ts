@@ -541,34 +541,37 @@ export interface GreekStrikeData {
 }
 
 /**
- * Pick the best ITM strike from Greeks data.
- * Target: delta 0.55-0.75 range (good ITM with meaningful premium).
- * For CALL: strike < underlying (ITM CE)
- * For PUT: strike > underlying (ITM PE)
+ * Pick the best strike for INTRADAY options trading.
+ * ATM or 1 strike ITM — best gamma, reasonable premium (₹80-200 range).
+ * Deep ITM is bad for intraday: high capital, low gamma, slow movement.
  */
 export function pickBestITMStrike(
   greeks: GreekStrikeData[], underlying: number, isCall: boolean, strikeStep: number,
 ): GreekStrikeData | null {
   const targetType = isCall ? "CE" : "PE";
+  const atmStrike = Math.round(underlying / strikeStep) * strikeStep;
+
+  // For intraday: ATM (delta ~0.5) or 1 strike ITM (delta ~0.55-0.6)
+  const maxITMDistance = strikeStep * 1.5;
   const candidates = greeks
     .filter((g) => g.optionType === targetType)
     .filter((g) => {
-      if (isCall) return g.strike < underlying - strikeStep * 0.3;
-      return g.strike > underlying + strikeStep * 0.3;
+      const dist = isCall ? underlying - g.strike : g.strike - underlying;
+      return dist >= -strikeStep * 0.5 && dist <= maxITMDistance;
     })
     .map((g) => ({ ...g, absDelta: Math.abs(g.delta) }));
 
   if (candidates.length === 0) return null;
 
-  // Prefer delta in 0.55-0.75 range (good ITM, responsive, meaningful premium)
-  const ideal = candidates.filter((c) => c.absDelta >= 0.55 && c.absDelta <= 0.75);
+  // Prefer ATM to 1-strike ITM (delta 0.45-0.60 = best gamma for intraday)
+  const ideal = candidates.filter((c) => c.absDelta >= 0.45 && c.absDelta <= 0.60);
   if (ideal.length > 0) {
-    ideal.sort((a, b) => Math.abs(a.absDelta - 0.65) - Math.abs(b.absDelta - 0.65));
+    ideal.sort((a, b) => Math.abs(a.absDelta - 0.52) - Math.abs(b.absDelta - 0.52));
     return ideal[0];
   }
 
-  // Fallback: closest to 0.65 delta among all ITM
-  candidates.sort((a, b) => Math.abs(a.absDelta - 0.65) - Math.abs(b.absDelta - 0.65));
+  // Fallback: closest to ATM strike
+  candidates.sort((a, b) => Math.abs(a.strike - atmStrike) - Math.abs(b.strike - atmStrike));
   return candidates[0];
 }
 
@@ -587,25 +590,20 @@ export function computeOptionsAdvisor(
   let iv: number;
 
   if (bestGreekStrike) {
-    // Use real Greeks data for best ITM strike
     strike = bestGreekStrike.strike;
     delta = Math.abs(bestGreekStrike.delta);
     iv = bestGreekStrike.iv;
   } else {
-    // Fallback: compute ITM strike 2-3 steps into the money
-    const itmOffset = strikeStep * 2;
+    // Fallback: ATM or 1 strike ITM (best for intraday)
     if (mode === "OTM Aggressive") {
-      const dist = atr * 1.5;
       strike = isBullish
-        ? Math.round((underlying + dist) / strikeStep) * strikeStep
-        : Math.round((underlying - dist) / strikeStep) * strikeStep;
-    } else if (mode === "ATM") {
-      strike = Math.round(underlying / strikeStep) * strikeStep;
+        ? Math.round((underlying + strikeStep) / strikeStep) * strikeStep
+        : Math.round((underlying - strikeStep) / strikeStep) * strikeStep;
     } else {
-      // High Delta / Balanced: go ITM
+      // ATM or 1 strike ITM — sweet spot for intraday
       strike = isBullish
-        ? Math.round((underlying - itmOffset) / strikeStep) * strikeStep
-        : Math.round((underlying + itmOffset) / strikeStep) * strikeStep;
+        ? Math.round((underlying - strikeStep * 0.5) / strikeStep) * strikeStep
+        : Math.round((underlying + strikeStep * 0.5) / strikeStep) * strikeStep;
     }
     delta = realDelta ?? estimateDelta(strike, underlying, isCall, volRegime);
     iv = realIV ?? (volRegime === "HIGH" ? 22 : volRegime === "LOW" ? 12 : 16);
@@ -624,13 +622,16 @@ export function computeOptionsAdvisor(
   const moneyness = diff > strikeStep * 0.5 ? "ITM" : Math.abs(diff) < strikeStep * 0.5 ? "ATM" : "OTM";
   const side: OptionsAdvisor["side"] = bias === "NEUTRAL" ? "BALANCED" : isBullish ? "CALL" : "PUT";
 
+  // Intraday-optimized risk management:
+  // Tight SL (20%) for confirmed multi-indicator signals
+  // Realistic intraday targets: T1 +25%, T2 +50%, T3 +80%
   const optionTargets: OptionTargets = {
     premiumEntry: premium,
-    premiumSL: Math.round(premium * 0.7),        // lose 30%
-    premiumT1: Math.round(premium * 1.3),         // +30%
-    premiumT2: Math.round(premium * 1.6),         // +60%
-    premiumT3: Math.round(premium * 2.0),         // +100%
-    premiumTrailSL: Math.round(premium * 1.15),   // lock 15% profit
+    premiumSL: Math.round(premium * 0.80),        // -20% SL (tight, confirmed signal)
+    premiumT1: Math.round(premium * 1.25),         // +25% (quick scalp)
+    premiumT2: Math.round(premium * 1.50),         // +50% (good move)
+    premiumT3: Math.round(premium * 1.80),         // +80% (full run)
+    premiumTrailSL: Math.round(premium * 1.10),    // lock 10% profit after T1
   };
 
   const recommendation = bias === "NEUTRAL"

@@ -569,15 +569,14 @@ async function getSignalsFromAngelOne(
           signal.optionsAdvisor!.recommendation =
             `BUY ${advisor.strike} ${advisor.side} @ ₹${realOptionPremium}`;
 
-          // Recalculate option targets based on real premium
           if (signal.optionsAdvisor!.optionTargets) {
             signal.optionsAdvisor!.optionTargets = {
               premiumEntry: realOptionPremium,
-              premiumSL: Math.round(realOptionPremium * 0.6),
-              premiumT1: Math.round(realOptionPremium * 1.5),
-              premiumT2: Math.round(realOptionPremium * 2.0),
-              premiumT3: Math.round(realOptionPremium * 2.5),
-              premiumTrailSL: Math.round(realOptionPremium * 1.2),
+              premiumSL: Math.round(realOptionPremium * 0.80),
+              premiumT1: Math.round(realOptionPremium * 1.25),
+              premiumT2: Math.round(realOptionPremium * 1.50),
+              premiumT3: Math.round(realOptionPremium * 1.80),
+              premiumTrailSL: Math.round(realOptionPremium * 1.10),
             };
           }
         }
@@ -599,11 +598,11 @@ async function getSignalsFromAngelOne(
             if (signal.optionsAdvisor!.optionTargets) {
               signal.optionsAdvisor!.optionTargets = {
                 premiumEntry: realOptionPremium,
-                premiumSL: Math.round(realOptionPremium * 0.6),
-                premiumT1: Math.round(realOptionPremium * 1.5),
-                premiumT2: Math.round(realOptionPremium * 2.0),
-                premiumT3: Math.round(realOptionPremium * 2.5),
-                premiumTrailSL: Math.round(realOptionPremium * 1.2),
+                premiumSL: Math.round(realOptionPremium * 0.80),
+                premiumT1: Math.round(realOptionPremium * 1.25),
+                premiumT2: Math.round(realOptionPremium * 1.50),
+                premiumT3: Math.round(realOptionPremium * 1.80),
+                premiumTrailSL: Math.round(realOptionPremium * 1.10),
               };
             }
           }
