@@ -7,11 +7,13 @@ import {
   generateSignalFromPCR,
   pickBestITMStrike,
   computeAdvancedFilters,
+  computeTechnicalIndicators,
   recordSignalDirection,
   type StrategySignal,
   type GreekStrikeData,
   type CandleData,
   type AdvancedFilters,
+  type TechnicalIndicators,
 } from "@/lib/strategy";
 import type { OptionChainRow } from "@/app/api/option-chain/route";
 import {
@@ -426,14 +428,18 @@ async function getSignalsFromAngelOne(
     ? greeksMaxPain[0].strike
     : Math.round(underlyingValue / step) * step;
 
-  // 5b. Fetch intraday candles (5-min) for advanced filters (Range Filter, RQK, Choppiness)
+  // 5b. Fetch intraday candles (5-min) for real technical indicators + advanced filters
   let advancedFilters: AdvancedFilters | null = null;
+  let technicalIndicators: TechnicalIndicators | null = null;
   try {
     const now = new Date();
     const fmtDT = (d: Date) =>
       `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
 
-    const todayFrom = `${fmtDT(now)} 09:15`;
+    // Fetch 3 days of 5-min candles for enough EMA/MACD history
+    const from3d = new Date(now);
+    from3d.setDate(from3d.getDate() - 3);
+    const todayFrom = `${fmtDT(from3d)} 09:15`;
     const todayTo = `${fmtDT(now)} 15:30`;
 
     const intradayCandles = await angelOneGetCandleData(
@@ -445,16 +451,27 @@ async function getSignalsFromAngelOne(
       const candleData: CandleData[] = intradayCandles.map((c) => ({
         open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
       }));
+
+      // Real EMA, RSI, MACD, VWAP computed from candles
+      technicalIndicators = computeTechnicalIndicators(candleData);
+      if (technicalIndicators) {
+        console.log(`[signals] Technical Indicators (${candleData.length} candles):`,
+          `EMA:${technicalIndicators.emaTrend}(${technicalIndicators.emaFast.toFixed(1)}/${technicalIndicators.emaSlow.toFixed(1)})`,
+          `RSI:${technicalIndicators.rsiValue}(${technicalIndicators.rsiSignal})`,
+          `MACD:${technicalIndicators.macdHist.toFixed(2)}(${technicalIndicators.macdBias})`,
+          `VWAP:${technicalIndicators.vwapBias}`);
+      }
+
       advancedFilters = computeAdvancedFilters(candleData);
-      console.log(`[signals] Advanced filters computed from ${candleData.length} intraday candles:`,
+      console.log(`[signals] Advanced filters:`,
         `RF:${advancedFilters.rfConfirmsBull ? "Bull" : advancedFilters.rfConfirmsBear ? "Bear" : "Flat"}`,
         `RQK:${advancedFilters.rqkConfirmsBull ? "Bull" : advancedFilters.rqkConfirmsBear ? "Bear" : "Flat"}`,
         `CHOP:${advancedFilters.choppiness}${advancedFilters.isChoppy ? "(choppy)" : "(trending)"}`);
     } else {
-      console.warn(`[signals] Only ${intradayCandles.length} intraday candles — skipping advanced filters`);
+      console.warn(`[signals] Only ${intradayCandles.length} intraday candles — skipping indicators`);
     }
   } catch (e) {
-    console.warn("[signals] Intraday candle fetch for advanced filters failed:", e);
+    console.warn("[signals] Intraday candle fetch failed:", e);
   }
 
   // ATM CE IV from greeks for options advisor
@@ -479,9 +496,8 @@ async function getSignalsFromAngelOne(
       tradeVolume: parseFloat(String(g.tradeVolume ?? 0)) || 0,
     })).filter((g) => !isNaN(g.strike));
 
-    // Pre-compute bias to know which side (CE/PE) to pick
     const { computeMultiFactorBias } = await import("@/lib/strategy");
-    const preBias = computeMultiFactorBias(pcrItem.pcr, priceAction);
+    const preBias = computeMultiFactorBias(pcrItem.pcr, priceAction, technicalIndicators, advancedFilters);
     const isCallSide = preBias.bias === "BULLISH" || preBias.bias === "NEUTRAL";
 
     bestGreekStrike = pickBestITMStrike(greekStrikes, underlyingValue, isCallSide, step);
@@ -508,6 +524,7 @@ async function getSignalsFromAngelOne(
       expiryDay: segment.expiryDay,
       bestGreekStrike,
       advancedFilters,
+      technicalIndicators,
       symbol,
     }
   );
@@ -635,6 +652,7 @@ async function getSignalsFromAngelOne(
       buyQty: totBuyQuan,
       sellQty: totSellQuan,
     },
+    technicalIndicators: technicalIndicators ?? undefined,
     timestamp: new Date().toISOString(),
   };
 }

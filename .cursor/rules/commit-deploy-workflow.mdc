@@ -1,0 +1,22 @@
+---
+description: Always commit and deploy to Vercel after making changes to the intraday trading platform
+alwaysApply: true
+---
+
+# Commit & Deploy Workflow
+
+After completing any code changes (fixes, features, refactors):
+
+1. **TypeScript check**: Run `npx tsc --noEmit` to verify no type errors
+2. **Git commit**: Stage all changes and commit with a descriptive message using HEREDOC format
+3. **Git push**: Push to `origin main`
+4. **Vercel deploy**: Run `npx vercel --prod` and wait for "Ready" status
+5. **Verify**: Confirm the deployment URL shows "Ready" in the output
+
+Always do all 5 steps together. Never leave changes uncommitted or undeployed.
+
+If the build fails on Vercel, fix the error immediately and re-deploy.
+
+## Paper Trade Storage Key
+
+When changing the `PaperTrade` interface, bump the storage key version (e.g. `paper_trades_v3` → `paper_trades_v4`) so old incompatible data doesn't cause issues. Remind the user to "Reset All Trades" after interface changes.

@@ -156,6 +156,14 @@ interface MarketData {
   sellQty: number;
 }
 
+interface TechIndicatorsUI {
+  emaFast: number; emaSlow: number; emaTrend: string;
+  rsiValue: number; rsiSignal: string;
+  macdLine: number; macdSignal: number; macdHist: number; macdBias: string;
+  vwap: number; vwapBias: string;
+  adxProxy: number; trendStrength: string;
+}
+
 interface SignalsResponse {
   source?: "angel_one" | "nse" | "demo";
   symbol: string;
@@ -170,6 +178,7 @@ interface SignalsResponse {
   oiBuildupLong?: OIBuildupItem[];
   oiBuildupShort?: OIBuildupItem[];
   marketData?: MarketData;
+  technicalIndicators?: TechIndicatorsUI;
   timestamp: string;
 }
 
@@ -285,6 +294,30 @@ export default function Home() {
               sub={sig?.tradeDirection?.includes("Long") ? "Buy CE" : sig?.tradeDirection?.includes("Short") ? "Buy PE" : "Wait"}
             />
           </div>
+
+          {/* Market Analysis (real technical indicators) */}
+          {data?.technicalIndicators && (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+              <h2 className="text-sm font-semibold text-sky-400 mb-3">Market Analysis (5-min candles)</h2>
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+                {[
+                  { label: "EMA 21/50", value: `${data.technicalIndicators.emaFast.toFixed(1)} / ${data.technicalIndicators.emaSlow.toFixed(1)}`, status: data.technicalIndicators.emaTrend },
+                  { label: "RSI (14)", value: String(data.technicalIndicators.rsiValue), status: data.technicalIndicators.rsiSignal },
+                  { label: "MACD Hist", value: data.technicalIndicators.macdHist.toFixed(2), status: data.technicalIndicators.macdBias },
+                  { label: "VWAP", value: data.technicalIndicators.vwap.toFixed(2), status: data.technicalIndicators.vwapBias },
+                  { label: "ADX Strength", value: data.technicalIndicators.adxProxy.toFixed(1), status: data.technicalIndicators.trendStrength === "STRONG" ? "BULL" : data.technicalIndicators.trendStrength === "WEAK" ? "BEAR" : "NEUTRAL" },
+                ].map((ind) => (
+                  <div key={ind.label} className="rounded bg-zinc-800/80 px-3 py-2">
+                    <div className="text-xs text-zinc-500">{ind.label}</div>
+                    <div className="font-bold text-sm mt-0.5">{ind.value}</div>
+                    <span className={`text-xs font-medium ${ind.status === "BULL" ? "text-emerald-400" : ind.status === "BEAR" ? "text-red-400" : "text-zinc-400"}`}>
+                      {ind.status}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
 
           {/* Signal Strength + Volatility Row */}
           {sig && (<>

@@ -205,7 +205,7 @@ export function computeVolatility(atr: number, atrSma: number, baseStopMult = 1.
   return { atr, atrSma, ratio: parseFloat(ratio.toFixed(2)), regime, dynamicStopMult, dynamicTargetMult };
 }
 
-// ---------- Signal Strength (0-7) ----------
+// ---------- Real Technical Indicators (from candle data, matching Pine Script) ----------
 
 export interface PriceAction {
   ltp: number;
@@ -215,92 +215,258 @@ export interface PriceAction {
   low: number;
 }
 
+/**
+ * Real technical indicators computed from 5-min intraday candles.
+ * Matches the Pine Script's EMA(21/50), RSI(14), MACD(12,26,9), VWAP, ADX proxy.
+ */
+export interface TechnicalIndicators {
+  emaFast: number;         // EMA 21
+  emaSlow: number;         // EMA 50
+  emaTrend: "BULL" | "BEAR";
+  rsiValue: number;        // RSI 14
+  rsiSignal: "BULL" | "BEAR" | "NEUTRAL";
+  macdLine: number;
+  macdSignal: number;
+  macdHist: number;
+  macdBias: "BULL" | "BEAR";
+  vwap: number;
+  vwapBias: "BULL" | "BEAR";
+  adxProxy: number;
+  trendStrength: "STRONG" | "MODERATE" | "WEAK";
+}
+
+function computeEMA(data: number[], period: number): number {
+  if (data.length === 0) return 0;
+  let ema = data[0];
+  const k = 2 / (period + 1);
+  for (let i = 1; i < data.length; i++) ema = data[i] * k + ema * (1 - k);
+  return ema;
+}
+
+function computeRSI(closes: number[], period = 14): number {
+  if (closes.length < period + 1) return 50;
+  let avgGain = 0, avgLoss = 0;
+  for (let i = 1; i <= period; i++) {
+    const diff = closes[i] - closes[i - 1];
+    if (diff > 0) avgGain += diff; else avgLoss -= diff;
+  }
+  avgGain /= period;
+  avgLoss /= period;
+  for (let i = period + 1; i < closes.length; i++) {
+    const diff = closes[i] - closes[i - 1];
+    avgGain = (avgGain * (period - 1) + (diff > 0 ? diff : 0)) / period;
+    avgLoss = (avgLoss * (period - 1) + (diff < 0 ? -diff : 0)) / period;
+  }
+  if (avgLoss === 0) return 100;
+  const rs = avgGain / avgLoss;
+  return 100 - 100 / (1 + rs);
+}
+
+function computeMACD(closes: number[], fast = 12, slow = 26, signal = 9): { line: number; signal: number; hist: number } {
+  if (closes.length < slow + signal) return { line: 0, signal: 0, hist: 0 };
+  const emaFast = emaArray(closes, fast);
+  const emaSlow = emaArray(closes, slow);
+  const macdLine: number[] = [];
+  for (let i = 0; i < closes.length; i++) macdLine.push(emaFast[i] - emaSlow[i]);
+  const signalLine = emaArray(macdLine, signal);
+  const n = closes.length - 1;
+  const line = macdLine[n];
+  const sig = signalLine[n];
+  return { line, signal: sig, hist: line - sig };
+}
+
+function computeVWAP(candles: CandleData[]): number {
+  let cumTPV = 0, cumVol = 0;
+  for (const c of candles) {
+    const tp = (c.high + c.low + c.close) / 3;
+    const vol = c.volume || 1;
+    cumTPV += tp * vol;
+    cumVol += vol;
+  }
+  return cumVol > 0 ? cumTPV / cumVol : candles[candles.length - 1]?.close ?? 0;
+}
+
+export function computeTechnicalIndicators(candles: CandleData[]): TechnicalIndicators | null {
+  if (candles.length < 30) return null;
+  const closes = candles.map((c) => c.close);
+  const ltp = closes[closes.length - 1];
+
+  const emaFast = computeEMA(closes, 21);
+  const emaSlow = computeEMA(closes, 50);
+  const emaTrend: "BULL" | "BEAR" = emaFast > emaSlow ? "BULL" : "BEAR";
+
+  const rsiValue = computeRSI(closes, 14);
+  const rsiSignal: "BULL" | "BEAR" | "NEUTRAL" =
+    rsiValue >= 52 && rsiValue < 80 ? "BULL" : rsiValue <= 48 && rsiValue > 20 ? "BEAR" : "NEUTRAL";
+
+  const macd = computeMACD(closes, 12, 26, 9);
+  const macdBias: "BULL" | "BEAR" = macd.hist > 0 ? "BULL" : "BEAR";
+
+  const vwap = computeVWAP(candles);
+  const vwapBias: "BULL" | "BEAR" = ltp > vwap ? "BULL" : "BEAR";
+
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
+  const n = candles.length;
+  const recentRange = highs.slice(-14).reduce((s, h, i) => s + h - lows.slice(-14)[i], 0) / 14;
+  const avgRange = highs.slice(-28).reduce((s, h, i) => s + h - lows.slice(-28)[i], 0) / Math.min(28, n);
+  const adxProxy = avgRange > 0 ? (recentRange / avgRange) * 25 : 18;
+  const trendStrength: "STRONG" | "MODERATE" | "WEAK" = adxProxy >= 25 ? "STRONG" : adxProxy >= 18 ? "MODERATE" : "WEAK";
+
+  return {
+    emaFast, emaSlow, emaTrend,
+    rsiValue: parseFloat(rsiValue.toFixed(1)), rsiSignal,
+    macdLine: parseFloat(macd.line.toFixed(2)), macdSignal: parseFloat(macd.signal.toFixed(2)),
+    macdHist: parseFloat(macd.hist.toFixed(2)), macdBias,
+    vwap: parseFloat(vwap.toFixed(2)), vwapBias,
+    adxProxy: parseFloat(adxProxy.toFixed(1)), trendStrength,
+  };
+}
+
+// ---------- Signal Strength (real indicators, 0-9 matching Pine Script) ----------
+
 export function computeSignalStrength(
   pcrValue: number, priceAction?: PriceAction, volRegime?: VolRegime,
   oiLongCount?: number, oiShortCount?: number,
+  tech?: TechnicalIndicators | null, filters?: AdvancedFilters | null,
 ): SignalStrength {
   const components: { name: string; ok: boolean }[] = [];
-  const trendOk = priceAction ? priceAction.ltp > priceAction.prevClose : false;
-  components.push({ name: "Trend (LTP > PrevClose)", ok: trendOk });
-  const rsiOk = priceAction ? Math.abs(priceAction.ltp - priceAction.open) / priceAction.open > 0.001 : false;
-  components.push({ name: "Momentum (RSI proxy)", ok: rsiOk });
-  const mid = priceAction ? (priceAction.open + priceAction.prevClose) / 2 : 0;
-  const macdOk = priceAction ? priceAction.ltp > mid || priceAction.ltp < mid * 0.998 : false;
-  components.push({ name: "MACD proxy", ok: macdOk });
-  const adxOk = priceAction ? (priceAction.high - priceAction.low) / priceAction.prevClose > 0.003 : false;
-  components.push({ name: "ADX (range expansion)", ok: adxOk });
-  const dayMid = priceAction ? (priceAction.high + priceAction.low) / 2 : 0;
-  const vwapOk = priceAction ? priceAction.ltp !== dayMid : false;
-  components.push({ name: "VWAP proxy", ok: vwapOk });
+
+  if (tech) {
+    components.push({ name: `EMA 21/50 (${tech.emaTrend})`, ok: tech.emaTrend === "BULL" });
+    components.push({ name: `RSI ${tech.rsiValue} (${tech.rsiSignal})`, ok: tech.rsiSignal === "BULL" });
+    components.push({ name: `MACD Hist ${tech.macdHist > 0 ? "+" : ""}${tech.macdHist}`, ok: tech.macdHist > 0 });
+    components.push({ name: `VWAP (${tech.vwapBias})`, ok: tech.vwapBias === "BULL" });
+    components.push({ name: `ADX Strength (${tech.trendStrength})`, ok: tech.adxProxy >= 18 });
+  } else if (priceAction) {
+    components.push({ name: "Trend (LTP > PrevClose)", ok: priceAction.ltp > priceAction.prevClose });
+    components.push({ name: "Momentum", ok: Math.abs(priceAction.ltp - priceAction.open) / priceAction.open > 0.001 });
+    components.push({ name: "MACD proxy", ok: priceAction.ltp > (priceAction.open + priceAction.prevClose) / 2 });
+    components.push({ name: "VWAP proxy", ok: priceAction.ltp > (priceAction.high + priceAction.low) / 2 });
+    components.push({ name: "ADX proxy", ok: (priceAction.high - priceAction.low) / priceAction.prevClose > 0.003 });
+  }
+
+  if (filters) {
+    components.push({ name: `Range Filter (${filters.rfConfirmsBull ? "▲" : filters.rfConfirmsBear ? "▼" : "—"})`, ok: filters.rfConfirmsBull });
+    components.push({ name: `RQK (${filters.rqkConfirmsBull ? "▲" : filters.rqkConfirmsBear ? "▼" : "—"})`, ok: filters.rqkConfirmsBull });
+    components.push({ name: `Chop ${filters.choppiness} (${filters.isChoppy ? "Ranging" : "Trending"})`, ok: !filters.isChoppy });
+  }
+
   const volOk = (oiLongCount ?? 0) + (oiShortCount ?? 0) > 0;
   components.push({ name: "OI Activity", ok: volOk });
-  const pcrOk = Math.abs(pcrValue - 1.0) > 0.02;
-  components.push({ name: "PCR Signal", ok: pcrOk });
+
   const score = components.filter((c) => c.ok).length;
-  const label = score >= 6 ? "STRONG" : score >= 4 ? "MODERATE" : "WEAK";
-  return { score, max: 7, label, components };
+  const max = components.length;
+  const pct = max > 0 ? score / max : 0;
+  const label = pct >= 0.75 ? "STRONG" : pct >= 0.5 ? "MODERATE" : "WEAK";
+  return { score, max, label, components };
 }
 
-// ---------- Weighted Sentiment ----------
+// ---------- Weighted Sentiment (real indicator scores, matching Pine Script) ----------
 
 export function computeSentiment(
   pcrValue: number, priceAction?: PriceAction,
   oiData?: { longCount: number; shortCount: number }, volRegime?: VolRegime,
+  tech?: TechnicalIndicators | null,
 ): Sentiment {
   const comps: { name: string; score: number; weight: number }[] = [];
-  let rsiScore = 0;
-  if (priceAction) { rsiScore = Math.max(-100, Math.min(100, ((priceAction.ltp - priceAction.prevClose) / priceAction.prevClose) * 3000)); }
-  comps.push({ name: "RSI (momentum)", score: Math.round(rsiScore), weight: 0.25 });
-  let macdScore = 0;
-  if (priceAction) { macdScore = Math.max(-50, Math.min(50, ((priceAction.ltp - priceAction.open) / priceAction.open) * 2500)); }
-  comps.push({ name: "MACD (direction)", score: Math.round(macdScore), weight: 0.20 });
-  let emaScore = 0;
-  if (pcrValue > 1.05) emaScore = 30; else if (pcrValue < 0.95) emaScore = -30;
-  if (priceAction && priceAction.ltp > priceAction.prevClose) emaScore += 15;
-  else if (priceAction && priceAction.ltp < priceAction.prevClose) emaScore -= 15;
-  comps.push({ name: "EMA (trend)", score: Math.round(emaScore), weight: 0.25 });
-  let vwapScore = 0;
-  if (priceAction) { const range = priceAction.high - priceAction.low; if (range > 0) { vwapScore = ((priceAction.ltp - priceAction.low) / range - 0.5) * 40; } }
-  comps.push({ name: "VWAP (position)", score: Math.round(vwapScore), weight: 0.15 });
+
+  if (tech) {
+    const rsiScore = Math.max(-100, Math.min(100, (tech.rsiValue - 50) * 2));
+    comps.push({ name: "RSI (14)", score: Math.round(rsiScore), weight: 0.25 });
+
+    const atr = tech.adxProxy > 0 ? tech.adxProxy : 1;
+    const macdScore = Math.max(-100, Math.min(100, (tech.macdHist / atr) * 100));
+    comps.push({ name: "MACD Hist", score: Math.round(macdScore), weight: 0.20 });
+
+    const emaScore = tech.emaTrend === "BULL" ? 100 : -100;
+    comps.push({ name: "EMA 21/50", score: emaScore, weight: 0.25 });
+
+    const vwapScore = tech.vwapBias === "BULL" ? 100 : -100;
+    comps.push({ name: "VWAP", score: vwapScore, weight: 0.15 });
+  } else {
+    let rsiScore = 0;
+    if (priceAction) rsiScore = Math.max(-100, Math.min(100, ((priceAction.ltp - priceAction.prevClose) / priceAction.prevClose) * 3000));
+    comps.push({ name: "RSI proxy", score: Math.round(rsiScore), weight: 0.25 });
+    let macdScore = 0;
+    if (priceAction) macdScore = Math.max(-50, Math.min(50, ((priceAction.ltp - priceAction.open) / priceAction.open) * 2500));
+    comps.push({ name: "MACD proxy", score: Math.round(macdScore), weight: 0.20 });
+    const emaScore = priceAction ? (priceAction.ltp > priceAction.prevClose ? 30 : -30) : 0;
+    comps.push({ name: "EMA proxy", score: emaScore, weight: 0.25 });
+    const vwapScore = priceAction ? (priceAction.ltp > (priceAction.high + priceAction.low) / 2 ? 30 : -30) : 0;
+    comps.push({ name: "VWAP proxy", score: Math.round(vwapScore), weight: 0.15 });
+  }
+
   let adxScore = 0;
-  if (oiData) { adxScore = Math.max(-20, Math.min(20, (oiData.longCount - oiData.shortCount) * 7)); }
+  if (oiData) adxScore = Math.max(-20, Math.min(20, (oiData.longCount - oiData.shortCount) * 7));
   comps.push({ name: "ADX (OI strength)", score: Math.round(adxScore), weight: 0.10 });
-  const volScore = volRegime === "HIGH" ? -10 : volRegime === "LOW" ? 10 : 0;
+  const volScore = volRegime === "HIGH" ? -100 : volRegime === "LOW" ? 60 : 20;
   comps.push({ name: "Vol Regime", score: volScore, weight: 0.05 });
+
   const rawScore = comps.reduce((sum, c) => sum + c.score * c.weight, 0);
   const score = Math.max(-100, Math.min(100, Math.round(rawScore)));
-  const side = score >= 40 ? "STRONG BUY" : score >= 20 ? "BUY" : score >= 5 ? "MILD BUY" : score <= -40 ? "STRONG SELL" : score <= -20 ? "SELL" : score <= -5 ? "MILD SELL" : "NEUTRAL";
+  const side = score >= 60 ? "STRONG BUY" : score >= 20 ? "BUY" : score >= 5 ? "MILD BUY" : score <= -60 ? "STRONG SELL" : score <= -20 ? "SELL" : score <= -5 ? "MILD SELL" : "NEUTRAL";
   const optionsBias = score >= 20 ? "Call Bias" : score >= 5 ? "Slight Call" : score <= -20 ? "Put Bias" : score <= -5 ? "Slight Put" : "Balanced";
   const momentum = score > 20 ? "BULLISH" : score > 0 ? "Bullish Tilt" : score < -20 ? "BEARISH" : score < 0 ? "Bearish Tilt" : "FLAT";
   return { score, side, optionsBias, momentum, components: comps };
 }
 
-// ---------- Multi-factor Bias ----------
+// ---------- Multi-factor Bias (real indicators > PCR, matching Pine Script) ----------
 
 export function computeMultiFactorBias(
   pcrValue: number, priceAction?: PriceAction,
+  tech?: TechnicalIndicators | null, filters?: AdvancedFilters | null,
 ): { bias: "BULLISH" | "BEARISH" | "NEUTRAL"; strength: "STRONG" | "MODERATE" | "MILD" | "NEUTRAL"; confidence: number } {
   let bullPoints = 0;
   let bearPoints = 0;
-  if (pcrValue > 1.2) bullPoints += 3; else if (pcrValue > 1.05) bullPoints += 2; else if (pcrValue > 1.0) bullPoints += 1;
-  if (pcrValue < 0.8) bearPoints += 3; else if (pcrValue < 0.95) bearPoints += 2; else if (pcrValue < 1.0) bearPoints += 1;
-  if (priceAction) {
+
+  // REAL TECHNICAL INDICATORS (high weight — these match Pine Script)
+  if (tech) {
+    // EMA 21 > EMA 50 = BULL (weight: 3 points — primary trend)
+    if (tech.emaTrend === "BULL") bullPoints += 3; else bearPoints += 3;
+
+    // RSI (weight: 2 points)
+    if (tech.rsiValue >= 52 && tech.rsiValue < 80) bullPoints += 2;
+    else if (tech.rsiValue <= 48 && tech.rsiValue > 20) bearPoints += 2;
+
+    // MACD histogram (weight: 2 points)
+    if (tech.macdHist > 0) bullPoints += 2; else bearPoints += 2;
+
+    // VWAP (weight: 1 point)
+    if (tech.vwapBias === "BULL") bullPoints += 1; else bearPoints += 1;
+
+    // ADX trending (weight: 1 point bonus for strong trends)
+    if (tech.trendStrength === "STRONG") {
+      if (tech.emaTrend === "BULL") bullPoints += 1; else bearPoints += 1;
+    }
+  } else if (priceAction) {
     const { ltp, open, prevClose } = priceAction;
     if (ltp > prevClose * 1.003) bullPoints += 2; else if (ltp > prevClose) bullPoints += 1;
     if (ltp < prevClose * 0.997) bearPoints += 2; else if (ltp < prevClose) bearPoints += 1;
     if (ltp > open * 1.002) bullPoints += 1;
     if (ltp < open * 0.998) bearPoints += 1;
-    if (open > prevClose * 1.003) bullPoints += 1;
-    if (open < prevClose * 0.997) bearPoints += 1;
   }
+
+  // ADVANCED FILTERS (weight: 1 point each — confirmation layer)
+  if (filters) {
+    if (filters.rfConfirmsBull) bullPoints += 1; else if (filters.rfConfirmsBear) bearPoints += 1;
+    if (filters.rqkConfirmsBull) bullPoints += 1; else if (filters.rqkConfirmsBear) bearPoints += 1;
+    if (filters.isChoppy) { bullPoints = Math.max(0, bullPoints - 2); bearPoints = Math.max(0, bearPoints - 2); }
+  }
+
+  // PCR (weight: 1 point — supporting, NOT dominant)
+  if (pcrValue > 1.2) bullPoints += 1;
+  else if (pcrValue < 0.8) bearPoints += 1;
+
   const net = bullPoints - bearPoints;
   const total = bullPoints + bearPoints;
   const baseConfidence = total > 0 ? Math.round((Math.abs(net) / total) * 50 + 50) : 50;
-  if (net >= 4) return { bias: "BULLISH", strength: "STRONG", confidence: Math.min(90, baseConfidence) };
-  if (net >= 2) return { bias: "BULLISH", strength: "MODERATE", confidence: baseConfidence };
+
+  if (net >= 6) return { bias: "BULLISH", strength: "STRONG", confidence: Math.min(92, baseConfidence) };
+  if (net >= 3) return { bias: "BULLISH", strength: "MODERATE", confidence: baseConfidence };
   if (net >= 1) return { bias: "BULLISH", strength: "MILD", confidence: baseConfidence };
-  if (net <= -4) return { bias: "BEARISH", strength: "STRONG", confidence: Math.min(90, baseConfidence) };
-  if (net <= -2) return { bias: "BEARISH", strength: "MODERATE", confidence: baseConfidence };
+  if (net <= -6) return { bias: "BEARISH", strength: "STRONG", confidence: Math.min(92, baseConfidence) };
+  if (net <= -3) return { bias: "BEARISH", strength: "MODERATE", confidence: baseConfidence };
   if (net <= -1) return { bias: "BEARISH", strength: "MILD", confidence: baseConfidence };
   return { bias: "NEUTRAL", strength: "NEUTRAL", confidence: 50 };
 }
@@ -706,6 +872,7 @@ export interface GenerateSignalOpts {
   expiryDay?: ExpiryDay;
   bestGreekStrike?: GreekStrikeData | null;
   advancedFilters?: AdvancedFilters | null;
+  technicalIndicators?: TechnicalIndicators | null;
   symbol?: string;
 }
 
@@ -719,61 +886,33 @@ export function generateSignalFromPCR(
   const pdc = opts?.pdc ?? underlyingValue;
   const strikeStep = opts?.strikeStep ?? 50;
 
-  let { bias, strength, confidence } = computeMultiFactorBias(pcrValue, opts?.priceAction);
+  const tech = opts?.technicalIndicators ?? null;
+  const filters = opts?.advancedFilters ?? null;
+  let { bias, strength, confidence } = computeMultiFactorBias(pcrValue, opts?.priceAction, tech, filters);
   const pcr: PCRResult = { value: pcrValue, bias: pcrValue > 1.05 ? "BULLISH" : pcrValue < 0.95 ? "BEARISH" : "NEUTRAL", callOI: 0, putOI: 0 };
   const atrSma = opts?.atrSma ?? atr;
   const volInfo = computeVolatility(atr, atrSma);
-  const signalStrength = computeSignalStrength(pcrValue, opts?.priceAction, volInfo.regime, opts?.oiData?.longCount, opts?.oiData?.shortCount);
+  const signalStrength = computeSignalStrength(pcrValue, opts?.priceAction, volInfo.regime, opts?.oiData?.longCount, opts?.oiData?.shortCount, tech, filters);
 
-  const filters = opts?.advancedFilters ?? null;
   let signalExpired = false;
   let alternateBlocked = false;
   let alternateReason: string | undefined;
 
-  // Apply advanced filters to bias
-  if (filters && bias !== "NEUTRAL") {
-    // Choppiness Index: if market is choppy, suppress directional signals
-    if (filters.isChoppy) {
-      confidence = Math.max(30, confidence - 20);
-    }
-
-    // Range Filter + RQK confirmation: both must agree for full confidence
+  // Signal Expiry & Alternate Signal (stateful checks)
+  if (filters && opts?.symbol && bias !== "NEUTRAL") {
     const rfAgrees = (bias === "BULLISH" && filters.rfConfirmsBull) || (bias === "BEARISH" && filters.rfConfirmsBear);
     const rqkAgrees = (bias === "BULLISH" && filters.rqkConfirmsBull) || (bias === "BEARISH" && filters.rqkConfirmsBear);
+    const filtersConfirm = (rfAgrees || rqkAgrees) && !filters.isChoppy;
 
-    if (!rfAgrees && !rqkAgrees) {
-      // Neither filter confirms — reduce confidence heavily
-      confidence = Math.max(30, confidence - 25);
-      if (filters.isChoppy) {
-        bias = "NEUTRAL";
-        strength = "NEUTRAL";
-      }
-    } else if (!rfAgrees || !rqkAgrees) {
-      confidence = Math.max(35, confidence - 10);
-    } else {
-      confidence = Math.min(95, confidence + 5);
+    const expiry = applySignalExpiry(opts.symbol, bias, filtersConfirm);
+    if (expiry.expired) {
+      signalExpired = true;
+      bias = "NEUTRAL"; strength = "NEUTRAL"; confidence = 40;
     }
 
-    // Signal Expiry
-    const filtersConfirm = rfAgrees && rqkAgrees && !filters.isChoppy;
-    if (opts?.symbol) {
-      const expiry = applySignalExpiry(opts.symbol, bias, filtersConfirm);
-      if (expiry.expired) {
-        signalExpired = true;
-        bias = "NEUTRAL";
-        strength = "NEUTRAL";
-        confidence = 40;
-      }
-    }
-
-    // Alternate Signal
-    if (opts?.symbol && bias !== "NEUTRAL") {
+    if (bias !== "NEUTRAL") {
       const alt = applyAlternateSignal(opts.symbol, bias);
-      if (alt.blocked) {
-        alternateBlocked = true;
-        alternateReason = alt.reason;
-        confidence = Math.max(35, confidence - 15);
-      }
+      if (alt.blocked) { alternateBlocked = true; alternateReason = alt.reason; confidence = Math.max(35, confidence - 15); }
     }
   }
 
@@ -789,7 +928,7 @@ export function generateSignalFromPCR(
   );
 
   const srLevels = computeSRLevels(pdh, pdl, pdc);
-  const sentiment = computeSentiment(pcrValue, opts?.priceAction, opts?.oiData, volInfo.regime);
+  const sentiment = computeSentiment(pcrValue, opts?.priceAction, opts?.oiData, volInfo.regime, tech);
   const partialExits = bias !== "NEUTRAL" ? computePartialExits(2000, targets.slPoints) : undefined;
   const tradeDirection = bias === "BULLISH" ? "Long Only" : bias === "BEARISH" ? "Short Only" : "Both (Wait)";
 
