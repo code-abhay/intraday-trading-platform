@@ -6,7 +6,7 @@ import Link from "next/link";
 
 const CAPITAL_KEY = "paper_trade_capital";
 const TRADES_KEY = "paper_trades_v2";
-const DEFAULT_CAPITAL = 10000;
+const DEFAULT_CAPITAL = 100000;
 
 interface PaperTrade {
   id: string;
@@ -61,6 +61,7 @@ export default function PaperTradePage() {
   const [trades, setTrades] = useState<PaperTrade[]>([]);
   const [quotes, setQuotes] = useState<Record<string, LiveQuote>>({});
   const [activeSegment, setActiveSegment] = useState<SegmentId>("NIFTY");
+  const [lotQty, setLotQty] = useState(1);
   const [tab, setTab] = useState<Tab>("trading");
 
   useEffect(() => { setCapital(loadCapital()); setTrades(loadTrades()); }, []);
@@ -123,7 +124,7 @@ export default function PaperTradePage() {
     const premium = q.optionPremium;
     const lotSize = seg.lotSize;
     const maxQty = Math.floor(available / (premium * lotSize));
-    const qty = Math.max(1, Math.min(maxQty, 1));
+    const qty = Math.max(1, Math.min(maxQty, lotQty));
     const invested = premium * qty * lotSize;
     if (invested > available) return;
     const trade: PaperTrade = {
@@ -216,6 +217,14 @@ export default function PaperTradePage() {
                     <div>
                       <div className="text-xs text-zinc-500">Lot Size</div>
                       <div className="font-bold">{getSegment(activeSegment).lotSize}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-zinc-500">Lots</div>
+                      <div className="flex items-center gap-1">
+                        <button onClick={() => setLotQty(Math.max(1, lotQty - 1))} className="rounded bg-zinc-700 px-2 py-0.5 text-sm hover:bg-zinc-600">-</button>
+                        <span className="font-bold w-6 text-center">{lotQty}</span>
+                        <button onClick={() => setLotQty(Math.min(10, lotQty + 1))} className="rounded bg-zinc-700 px-2 py-0.5 text-sm hover:bg-zinc-600">+</button>
+                      </div>
                     </div>
                     <div>
                       <div className="text-xs text-zinc-500">Expiry</div>

@@ -341,7 +341,7 @@ export function computePartialExits(riskPerTrade = 2000, slPoints: number, rupee
   return { t1Pct: 30, t2Pct: 40, t3Pct: 30, t1Lots, t2Lots, t3Lots, totalLots };
 }
 
-// ---------- Options Advisor (ATM default, premium-based targets) ----------
+// ---------- Options Advisor (ITM-first for meaningful premiums) ----------
 
 function estimateDelta(strike: number, currentPrice: number, isCall: boolean, volRegime: VolRegime = "NORMAL"): number {
   const moneyness = isCall ? (currentPrice - strike) / currentPrice : (strike - currentPrice) / currentPrice;
@@ -362,41 +362,91 @@ function getDaysToExpiry(expiryDay: ExpiryDay): number {
   return daysAhead || 7;
 }
 
-export function computeOptionsAdvisor(
-  underlying: number, atr: number, bias: "BULLISH" | "BEARISH" | "NEUTRAL",
-  strikeStep = 50, mode: StrikeMode = "ATM", volRegime: VolRegime = "NORMAL",
-  realDelta?: number, realIV?: number, expiryDay: ExpiryDay = 4,
-): OptionsAdvisor {
-  const baseStrike = Math.round(underlying / strikeStep) * strikeStep;
-  const effectiveBias = bias === "NEUTRAL" ? "BULLISH" : bias;
-  const isBullish = effectiveBias === "BULLISH";
+export interface GreekStrikeData {
+  strike: number;
+  optionType: "CE" | "PE";
+  delta: number;
+  iv: number;
+  tradeVolume: number;
+}
 
-  // Default to ATM for best responsiveness; only go OTM if explicitly asked
-  let strike: number;
-  if (mode === "High Delta") {
-    strike = isBullish
-      ? Math.round((underlying - strikeStep) / strikeStep) * strikeStep
-      : Math.round((underlying + strikeStep) / strikeStep) * strikeStep;
-  } else if (mode === "OTM Aggressive") {
-    const dist = atr * 1.5;
-    strike = isBullish
-      ? Math.round((underlying + dist) / strikeStep) * strikeStep
-      : Math.round((underlying - dist) / strikeStep) * strikeStep;
-  } else {
-    // ATM and Balanced both default to ATM strike
-    strike = baseStrike;
+/**
+ * Pick the best ITM strike from Greeks data.
+ * Target: delta 0.55-0.75 range (good ITM with meaningful premium).
+ * For CALL: strike < underlying (ITM CE)
+ * For PUT: strike > underlying (ITM PE)
+ */
+export function pickBestITMStrike(
+  greeks: GreekStrikeData[], underlying: number, isCall: boolean, strikeStep: number,
+): GreekStrikeData | null {
+  const targetType = isCall ? "CE" : "PE";
+  const candidates = greeks
+    .filter((g) => g.optionType === targetType)
+    .filter((g) => {
+      if (isCall) return g.strike < underlying - strikeStep * 0.3;
+      return g.strike > underlying + strikeStep * 0.3;
+    })
+    .map((g) => ({ ...g, absDelta: Math.abs(g.delta) }));
+
+  if (candidates.length === 0) return null;
+
+  // Prefer delta in 0.55-0.75 range (good ITM, responsive, meaningful premium)
+  const ideal = candidates.filter((c) => c.absDelta >= 0.55 && c.absDelta <= 0.75);
+  if (ideal.length > 0) {
+    ideal.sort((a, b) => Math.abs(a.absDelta - 0.65) - Math.abs(b.absDelta - 0.65));
+    return ideal[0];
   }
 
+  // Fallback: closest to 0.65 delta among all ITM
+  candidates.sort((a, b) => Math.abs(a.absDelta - 0.65) - Math.abs(b.absDelta - 0.65));
+  return candidates[0];
+}
+
+export function computeOptionsAdvisor(
+  underlying: number, atr: number, bias: "BULLISH" | "BEARISH" | "NEUTRAL",
+  strikeStep = 50, mode: StrikeMode = "High Delta", volRegime: VolRegime = "NORMAL",
+  realDelta?: number, realIV?: number, expiryDay: ExpiryDay = 4,
+  bestGreekStrike?: GreekStrikeData | null,
+): OptionsAdvisor {
+  const effectiveBias = bias === "NEUTRAL" ? "BULLISH" : bias;
+  const isBullish = effectiveBias === "BULLISH";
   const isCall = isBullish;
-  const delta = realDelta ?? estimateDelta(strike, underlying, isCall, volRegime);
+
+  let strike: number;
+  let delta: number;
+  let iv: number;
+
+  if (bestGreekStrike) {
+    // Use real Greeks data for best ITM strike
+    strike = bestGreekStrike.strike;
+    delta = Math.abs(bestGreekStrike.delta);
+    iv = bestGreekStrike.iv;
+  } else {
+    // Fallback: compute ITM strike 2-3 steps into the money
+    const itmOffset = strikeStep * 2;
+    if (mode === "OTM Aggressive") {
+      const dist = atr * 1.5;
+      strike = isBullish
+        ? Math.round((underlying + dist) / strikeStep) * strikeStep
+        : Math.round((underlying - dist) / strikeStep) * strikeStep;
+    } else if (mode === "ATM") {
+      strike = Math.round(underlying / strikeStep) * strikeStep;
+    } else {
+      // High Delta / Balanced: go ITM
+      strike = isBullish
+        ? Math.round((underlying - itmOffset) / strikeStep) * strikeStep
+        : Math.round((underlying + itmOffset) / strikeStep) * strikeStep;
+    }
+    delta = realDelta ?? estimateDelta(strike, underlying, isCall, volRegime);
+    iv = realIV ?? (volRegime === "HIGH" ? 22 : volRegime === "LOW" ? 12 : 16);
+  }
 
   const intrinsic = isCall ? Math.max(0, underlying - strike) : Math.max(0, strike - underlying);
   const basePremMult = 0.02;
   const volAdj = volRegime === "HIGH" ? 1.5 : volRegime === "LOW" ? 0.7 : 1.0;
   const timeValue = strike * basePremMult * volAdj * (atr / underlying);
-  const premium = Math.max(1, Math.round(intrinsic + timeValue));
+  const premium = Math.max(5, Math.round(intrinsic + timeValue));
 
-  const iv = realIV ?? (volRegime === "HIGH" ? 22 : volRegime === "LOW" ? 12 : 16);
   const daysToExpiry = getDaysToExpiry(expiryDay);
   const theta = parseFloat((-premium / Math.max(1, daysToExpiry) * 0.6).toFixed(2));
 
@@ -404,14 +454,13 @@ export function computeOptionsAdvisor(
   const moneyness = diff > strikeStep * 0.5 ? "ITM" : Math.abs(diff) < strikeStep * 0.5 ? "ATM" : "OTM";
   const side: OptionsAdvisor["side"] = bias === "NEUTRAL" ? "BALANCED" : isBullish ? "CALL" : "PUT";
 
-  // Option premium-based targets: SL=40% of premium, T1=50%, T2=100%, T3=150%
   const optionTargets: OptionTargets = {
     premiumEntry: premium,
-    premiumSL: Math.round(premium * 0.6),        // lose 40%
-    premiumT1: Math.round(premium * 1.5),         // +50%
-    premiumT2: Math.round(premium * 2.0),         // +100%
-    premiumT3: Math.round(premium * 2.5),         // +150%
-    premiumTrailSL: Math.round(premium * 1.2),    // lock 20% profit
+    premiumSL: Math.round(premium * 0.7),        // lose 30%
+    premiumT1: Math.round(premium * 1.3),         // +30%
+    premiumT2: Math.round(premium * 1.6),         // +60%
+    premiumT3: Math.round(premium * 2.0),         // +100%
+    premiumTrailSL: Math.round(premium * 1.15),   // lock 15% profit
   };
 
   const recommendation = bias === "NEUTRAL"
@@ -445,6 +494,7 @@ export interface GenerateSignalOpts {
   priceAction?: PriceAction;
   oiData?: { longCount: number; shortCount: number };
   expiryDay?: ExpiryDay;
+  bestGreekStrike?: GreekStrikeData | null;
 }
 
 export function generateSignalFromPCR(
@@ -469,8 +519,9 @@ export function generateSignalFromPCR(
   const bearishTargets = computeTargetsStops(entry, atr, "BEARISH", strikeStep, volInfo);
 
   const optionsAdvisor = computeOptionsAdvisor(
-    underlyingValue, atr, bias, strikeStep, "ATM", volInfo.regime,
+    underlyingValue, atr, bias, strikeStep, "High Delta", volInfo.regime,
     opts?.greekDelta, opts?.greekIV, opts?.expiryDay ?? 4,
+    opts?.bestGreekStrike,
   );
 
   const srLevels = computeSRLevels(pdh, pdl, pdc);

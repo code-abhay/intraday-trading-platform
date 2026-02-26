@@ -5,7 +5,9 @@ import {
   computeOIBuildup,
   generateSignal,
   generateSignalFromPCR,
+  pickBestITMStrike,
   type StrategySignal,
+  type GreekStrikeData,
 } from "@/lib/strategy";
 import type { OptionChainRow } from "@/app/api/option-chain/route";
 import {
@@ -422,6 +424,8 @@ async function getSignalsFromAngelOne(
 
   // ATM CE IV from greeks for options advisor
   let greekIV: number | undefined;
+  let bestGreekStrike: GreekStrikeData | null = null;
+
   if (greeksData.length > 0) {
     const atmStrike2 = Math.round(underlyingValue / step) * step;
     const ceIVRow = greeksData.find(
@@ -429,6 +433,25 @@ async function getSignalsFromAngelOne(
     );
     if (ceIVRow?.impliedVolatility) {
       greekIV = parseFloat(String(ceIVRow.impliedVolatility));
+    }
+
+    // Build strike data from Greeks for ITM strike selection
+    const greekStrikes: GreekStrikeData[] = greeksData.map((g) => ({
+      strike: parseFloat(String(g.strikePrice)),
+      optionType: g.optionType,
+      delta: parseFloat(String(g.delta)) || 0,
+      iv: parseFloat(String(g.impliedVolatility ?? 0)) || 0,
+      tradeVolume: parseFloat(String(g.tradeVolume ?? 0)) || 0,
+    })).filter((g) => !isNaN(g.strike));
+
+    // Pre-compute bias to know which side (CE/PE) to pick
+    const { computeMultiFactorBias } = await import("@/lib/strategy");
+    const preBias = computeMultiFactorBias(pcrItem.pcr, priceAction);
+    const isCallSide = preBias.bias === "BULLISH" || preBias.bias === "NEUTRAL";
+
+    bestGreekStrike = pickBestITMStrike(greekStrikes, underlyingValue, isCallSide, step);
+    if (bestGreekStrike) {
+      console.log(`[signals] Best ITM strike from Greeks: ${bestGreekStrike.strike} ${bestGreekStrike.optionType} delta=${bestGreekStrike.delta.toFixed(3)} iv=${bestGreekStrike.iv.toFixed(1)}`);
     }
   }
 
@@ -448,6 +471,7 @@ async function getSignalsFromAngelOne(
       priceAction,
       oiData,
       expiryDay: segment.expiryDay,
+      bestGreekStrike,
     }
   );
 
@@ -554,7 +578,7 @@ async function getSignalsFromAngelOne(
     signal,
     rawPCR: pcrItem.pcr,
     pcrSymbol: pcrItem.tradingSymbol,
-    expiry: matchedExpiry || "",
+    expiry: matchedExpiry || getExpiryCandidates(segment.expiryDay)[0] || "",
     optionSymbol: optionSymbolName || "",
     maxPain: greeksMaxPain.length > 0 ? greeksMaxPain : [{ strike: maxPainStrike, totalPayout: 0 }],
     oiTable: oiTable.length > 0 ? oiTable : undefined,
