@@ -30,6 +30,9 @@ import {
   Menu,
   Bell,
   BellOff,
+  Sparkles,
+  AlertTriangle,
+  Brain,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -70,10 +73,86 @@ export default function Home() {
   const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
   const lastBiasRef = useRef<string>("");
   const [notifyEnabled, setNotifyEnabled] = useState<boolean | null>(null);
+  const [aiEnabled, setAiEnabled] = useState<boolean | null>(null);
+  const [aiAnalysis, setAiAnalysis] = useState<{
+    aiScore: number; aiConfidence: number; riskLevel: string;
+    reasoning: string; keyFactors: string[]; caution: string | null;
+    adjustedSL: number | null; adjustedT1: number | null;
+  } | null>(null);
+  const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
     fetch("/api/notify").then(r => r.json()).then(d => setNotifyEnabled(d.enabled)).catch(() => {});
+    fetch("/api/ai-analyze").then(r => r.json()).then(d => setAiEnabled(d.enabled)).catch(() => {});
   }, []);
+
+  const fetchAiAnalysis = useCallback(async (resp: SignalsResponse) => {
+    if (!aiEnabled) return;
+    const sig = resp.signal;
+    if (!sig || sig.bias === "NEUTRAL") { setAiAnalysis(null); return; }
+    setAiLoading(true);
+    try {
+      const res = await fetch("/api/ai-analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          segment: resp.symbol,
+          ltp: resp.underlyingValue,
+          bias: sig.bias,
+          biasStrength: sig.biasStrength,
+          confidence: sig.confidence,
+          pcr: sig.pcr,
+          maxPain: sig.maxPain,
+          technicals: resp.technicalIndicators ? {
+            emaFast: resp.technicalIndicators.emaFast,
+            emaSlow: resp.technicalIndicators.emaSlow,
+            emaTrend: resp.technicalIndicators.emaTrend,
+            rsiValue: resp.technicalIndicators.rsiValue,
+            rsiSignal: resp.technicalIndicators.rsiSignal,
+            macdHist: resp.technicalIndicators.macdHist,
+            macdBias: resp.technicalIndicators.macdBias,
+            vwap: resp.technicalIndicators.vwap,
+            vwapBias: resp.technicalIndicators.vwapBias,
+            adxProxy: resp.technicalIndicators.adxProxy,
+            trendStrength: resp.technicalIndicators.trendStrength,
+          } : null,
+          srLevels: sig.srLevels ? {
+            pdh: sig.srLevels.pdh, pdl: sig.srLevels.pdl,
+            pivot: sig.srLevels.pivot, r1: sig.srLevels.r1,
+            r2: sig.srLevels.r2, s1: sig.srLevels.s1, s2: sig.srLevels.s2,
+          } : null,
+          volatility: sig.volatility ? {
+            atr: sig.volatility.atr, ratio: sig.volatility.ratio,
+            regime: sig.volatility.regime,
+          } : null,
+          advancedFilters: sig.advancedFilters ? {
+            rfConfirmsBull: sig.advancedFilters.rfConfirmsBull,
+            rfConfirmsBear: sig.advancedFilters.rfConfirmsBear,
+            rqkConfirmsBull: sig.advancedFilters.rqkConfirmsBull,
+            rqkConfirmsBear: sig.advancedFilters.rqkConfirmsBear,
+            choppiness: sig.advancedFilters.choppiness,
+            isChoppy: sig.advancedFilters.isChoppy,
+          } : null,
+          optionsAdvisor: sig.optionsAdvisor ? {
+            strike: sig.optionsAdvisor.strike, side: sig.optionsAdvisor.side,
+            premium: sig.optionsAdvisor.premium, delta: sig.optionsAdvisor.delta,
+            iv: sig.optionsAdvisor.iv, moneyness: sig.optionsAdvisor.moneyness,
+          } : null,
+          targets: sig.targets ? {
+            entry: sig.targets.entry, stopLoss: sig.targets.stopLoss,
+            t1: sig.targets.t1, t2: sig.targets.t2, t3: sig.targets.t3,
+          } : null,
+          sentiment: sig.sentiment ? {
+            score: sig.sentiment.score, side: sig.sentiment.side,
+            momentum: sig.sentiment.momentum,
+          } : null,
+        }),
+      });
+      const json = await res.json();
+      if (json.analysis) setAiAnalysis(json.analysis);
+    } catch {}
+    finally { setAiLoading(false); }
+  }, [aiEnabled]);
 
   const sendNotification = useCallback(async (resp: SignalsResponse) => {
     if (!notifyEnabled) return;
@@ -128,12 +207,13 @@ export default function Home() {
       const resp: SignalsResponse = await res.json();
       setData(resp);
       sendNotification(resp);
+      fetchAiAnalysis(resp);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch");
     } finally {
       setLoading(false);
     }
-  }, [segment, sendNotification]);
+  }, [segment, sendNotification, fetchAiAnalysis]);
 
   useEffect(() => {
     if (!marketOpen) {
@@ -160,6 +240,12 @@ export default function Home() {
         />
         <div className="flex-1" />
         <div className="flex items-center gap-3">
+          {aiEnabled && (
+            <Badge variant="secondary" className="gap-1 hidden sm:inline-flex text-purple-400 border-purple-500/20">
+              <Brain className="size-3" />
+              AI
+            </Badge>
+          )}
           {notifyEnabled !== null && (
             <Badge variant={notifyEnabled ? "default" : "secondary"} className="gap-1 hidden sm:inline-flex" title={notifyEnabled ? "Telegram alerts active" : "Telegram not configured"}>
               {notifyEnabled ? <Bell className="size-3" /> : <BellOff className="size-3" />}
@@ -234,9 +320,16 @@ export default function Home() {
           />
           <StatCard
             label="Confidence"
-            value={sig ? `${sig.confidence}%` : "—"}
-            subValue={sig?.signalStrength?.label}
-            trend={sig?.confidence && sig.confidence >= 60 ? "up" : sig?.confidence && sig.confidence < 40 ? "down" : "neutral"}
+            value={sig ? `${
+              aiAnalysis
+                ? Math.round(sig.confidence * 0.6 + aiAnalysis.aiConfidence * 0.4)
+                : sig.confidence
+            }%` : "—"}
+            subValue={aiAnalysis ? `AI: ${aiAnalysis.aiConfidence}%` : sig?.signalStrength?.label}
+            trend={(() => {
+              const c = aiAnalysis ? Math.round(sig!.confidence * 0.6 + aiAnalysis.aiConfidence * 0.4) : sig?.confidence;
+              return c && c >= 60 ? "up" as const : c && c < 40 ? "down" as const : "neutral" as const;
+            })()}
             icon={Gauge}
           />
           <div className="col-span-2 lg:col-span-1 rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 backdrop-blur-sm flex flex-col justify-between">
@@ -415,6 +508,105 @@ export default function Home() {
               )}
             </div>
           </div>
+        )}
+
+        {/* AI Advisor */}
+        {aiEnabled && sig && sig.bias !== "NEUTRAL" && (
+          <Card className="border-purple-500/20 bg-purple-500/[0.03]">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between">
+                <CardTitle className="text-sm flex items-center gap-2">
+                  <Brain className="size-4 text-purple-400" />
+                  AI Trade Advisor
+                </CardTitle>
+                <Badge variant="secondary" className="gap-1 text-[10px]">
+                  <Sparkles className="size-2.5" />
+                  Powered by AI
+                </Badge>
+              </div>
+            </CardHeader>
+            <CardContent>
+              {aiLoading && !aiAnalysis ? (
+                <div className="space-y-3 animate-pulse">
+                  <div className="h-8 w-24 bg-zinc-800 rounded-lg" />
+                  <div className="h-4 w-full bg-zinc-800 rounded" />
+                  <div className="h-4 w-3/4 bg-zinc-800 rounded" />
+                </div>
+              ) : aiAnalysis ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-end gap-1.5">
+                      <span className={`text-4xl font-bold tabular-nums ${
+                        aiAnalysis.aiScore >= 8 ? "text-emerald-400" :
+                        aiAnalysis.aiScore >= 5 ? "text-amber-400" : "text-red-400"
+                      }`}>
+                        {aiAnalysis.aiScore}
+                      </span>
+                      <span className="text-zinc-500 text-sm mb-1.5">/ 10</span>
+                    </div>
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Badge variant={
+                          aiAnalysis.riskLevel === "LOW" ? "default" :
+                          aiAnalysis.riskLevel === "MEDIUM" ? "warning" : "destructive"
+                        }>
+                          {aiAnalysis.riskLevel} Risk
+                        </Badge>
+                        <span className="text-xs text-zinc-500">
+                          AI Confidence: {aiAnalysis.aiConfidence}%
+                        </span>
+                      </div>
+                      <div className="w-full bg-zinc-800 rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${
+                            aiAnalysis.aiScore >= 8 ? "bg-emerald-500" :
+                            aiAnalysis.aiScore >= 5 ? "bg-amber-500" : "bg-red-500"
+                          }`}
+                          style={{ width: `${aiAnalysis.aiScore * 10}%` }}
+                        />
+                      </div>
+                    </div>
+                  </div>
+
+                  <p className="text-sm text-zinc-300 leading-relaxed">{aiAnalysis.reasoning}</p>
+
+                  {aiAnalysis.keyFactors.length > 0 && (
+                    <div className="flex flex-wrap gap-1.5">
+                      {aiAnalysis.keyFactors.map((f, i) => (
+                        <Badge key={i} variant="secondary" className="text-xs">
+                          {f}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
+
+                  {aiAnalysis.caution && (
+                    <div className="flex items-start gap-2 rounded-lg bg-amber-500/5 border border-amber-500/20 p-3">
+                      <AlertTriangle className="size-4 text-amber-400 shrink-0 mt-0.5" />
+                      <p className="text-xs text-amber-300/90">{aiAnalysis.caution}</p>
+                    </div>
+                  )}
+
+                  {(aiAnalysis.adjustedSL || aiAnalysis.adjustedT1) && (
+                    <div className="flex gap-3 text-xs">
+                      {aiAnalysis.adjustedSL && (
+                        <span className="text-zinc-400">
+                          AI suggests SL: <span className="text-red-400 font-medium">₹{aiAnalysis.adjustedSL}</span>
+                        </span>
+                      )}
+                      {aiAnalysis.adjustedT1 && (
+                        <span className="text-zinc-400">
+                          AI suggests T1: <span className="text-emerald-400 font-medium">₹{aiAnalysis.adjustedT1}</span>
+                        </span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ) : (
+                <p className="text-sm text-zinc-500 py-2">AI analysis unavailable. Will retry on next signal refresh.</p>
+              )}
+            </CardContent>
+          </Card>
         )}
 
         {/* Market Analysis tabs */}
