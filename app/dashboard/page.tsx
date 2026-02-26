@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { SEGMENTS, type SegmentId } from "@/lib/segments";
 import { isMarketOpen, getMarketStatusMessage } from "@/lib/utils";
 import { AppHeader, SegmentSelector } from "@/components/app-header";
@@ -28,6 +28,8 @@ import {
   WifiOff,
   ChevronRight,
   Menu,
+  Bell,
+  BellOff,
 } from "lucide-react";
 import Link from "next/link";
 
@@ -66,6 +68,42 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const [mobileOpen, setMobileOpen] = useState(false);
   const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
+  const lastBiasRef = useRef<string>("");
+  const [notifyEnabled, setNotifyEnabled] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetch("/api/notify").then(r => r.json()).then(d => setNotifyEnabled(d.enabled)).catch(() => {});
+  }, []);
+
+  const sendNotification = useCallback(async (resp: SignalsResponse) => {
+    if (!notifyEnabled) return;
+    const sig = resp.signal;
+    const biasKey = `${resp.symbol}_${sig.bias}`;
+    if (biasKey === lastBiasRef.current) return;
+    if (sig.bias === "NEUTRAL" && !lastBiasRef.current) { lastBiasRef.current = biasKey; return; }
+    lastBiasRef.current = biasKey;
+
+    fetch("/api/notify", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        segment: resp.symbol,
+        bias: sig.bias,
+        confidence: sig.confidence,
+        strike: sig.optionsAdvisor?.strike,
+        side: sig.optionsAdvisor?.side,
+        premium: sig.optionsAdvisor?.premium,
+        entry: sig.targets?.entry,
+        stopLoss: sig.targets?.stopLoss,
+        t1: sig.targets?.t1,
+        t2: sig.targets?.t2,
+        t3: sig.targets?.t3,
+        ltp: resp.underlyingValue,
+        pcr: sig.pcr.value,
+        summary: sig.summary,
+      }),
+    }).catch(() => {});
+  }, [notifyEnabled]);
 
   useEffect(() => {
     const check = () => setMarketOpen(isMarketOpen());
@@ -87,13 +125,15 @@ export default function Home() {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.details || err.error || `HTTP ${res.status}`);
       }
-      setData(await res.json());
+      const resp: SignalsResponse = await res.json();
+      setData(resp);
+      sendNotification(resp);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch");
     } finally {
       setLoading(false);
     }
-  }, [segment]);
+  }, [segment, sendNotification]);
 
   useEffect(() => {
     if (!marketOpen) {
@@ -120,6 +160,12 @@ export default function Home() {
         />
         <div className="flex-1" />
         <div className="flex items-center gap-3">
+          {notifyEnabled !== null && (
+            <Badge variant={notifyEnabled ? "default" : "secondary"} className="gap-1 hidden sm:inline-flex" title={notifyEnabled ? "Telegram alerts active" : "Telegram not configured"}>
+              {notifyEnabled ? <Bell className="size-3" /> : <BellOff className="size-3" />}
+              {notifyEnabled ? "Alerts On" : "No Alerts"}
+            </Badge>
+          )}
           {data?.source && (
             <Badge variant="secondary" className="gap-1.5 hidden sm:inline-flex">
               {data.source === "angel_one" ? <Wifi className="size-3 text-emerald-400" /> : <WifiOff className="size-3" />}
