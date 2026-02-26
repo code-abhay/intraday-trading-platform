@@ -71,6 +71,12 @@ interface OITableRow {
   peOI: number;
 }
 
+interface OIBuildupItem {
+  symbol: string;
+  oiChange: number;
+  priceChange: number;
+}
+
 interface SignalsResponse {
   source?: "angel_one" | "nse" | "demo";
   symbol: string;
@@ -78,6 +84,8 @@ interface SignalsResponse {
   signal: Signal;
   maxPain: { strike: number; totalPayout: number }[];
   oiTable?: OITableRow[];
+  oiBuildupLong?: OIBuildupItem[];
+  oiBuildupShort?: OIBuildupItem[];
   timestamp: string;
 }
 
@@ -257,14 +265,12 @@ export default function Home() {
                 </p>
                 {data && (
                   <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                    {data.signal.entry != null && (
-                      <span>Entry: <strong>{data.signal.entry}</strong></span>
-                    )}
-                    {data.signal.stopLoss != null && (
-                      <span>SL: <strong className="text-red-400">{data.signal.stopLoss}</strong></span>
-                    )}
-                    {data.signal.target != null && (
-                      <span>T3: <strong className="text-emerald-400">{data.signal.target}</strong></span>
+                    {data.signal.bias !== "NEUTRAL" && data.signal.entry != null && (
+                      <>
+                        <span>Entry: <strong>{data.signal.entry}</strong></span>
+                        <span>SL: <strong className="text-red-400">{data.signal.stopLoss}</strong></span>
+                        <span>T3: <strong className="text-emerald-400">{data.signal.target}</strong></span>
+                      </>
                     )}
                     <span>Confidence: <strong>{data.signal.confidence}%</strong></span>
                   </div>
@@ -398,17 +404,25 @@ export default function Home() {
               <h2 className="text-lg font-semibold text-emerald-400 mb-3">
                 Targets &amp; Stops
               </h2>
-              <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                <LevelCard label="Entry" value={data.signal.targets.entry} />
-                <LevelCard label="Stop Loss" value={data.signal.targets.stopLoss} variant="danger" />
-                <LevelCard label="Trailing Stop" value={data.signal.targets.trailingStop} variant="warning" />
-                <LevelCard label="Target 1 (1.36R)" value={data.signal.targets.t1} variant="success" />
-                <LevelCard label="Target 2 (2.73R)" value={data.signal.targets.t2} variant="success" />
-                <LevelCard label="Target 3 (4.55R)" value={data.signal.targets.t3} variant="success" />
-              </div>
-              <p className="mt-2 text-xs text-zinc-500">
-                SL points: {data.signal.targets.slPoints.toFixed(0)} • R:R T1={data.signal.targets.rr1} T2={data.signal.targets.rr2} T3={data.signal.targets.rr3}
-              </p>
+              {data.signal.bias === "NEUTRAL" || data.signal.targets.slPoints === 0 ? (
+                <p className="text-zinc-500 text-sm">
+                  No trade signal — PCR is neutral. Targets and stops will appear when bias is BULLISH or BEARISH.
+                </p>
+              ) : (
+                <>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <LevelCard label="Entry" value={data.signal.targets.entry} />
+                    <LevelCard label="Stop Loss" value={data.signal.targets.stopLoss} variant="danger" />
+                    <LevelCard label="Trailing Stop" value={data.signal.targets.trailingStop} variant="warning" />
+                    <LevelCard label="Target 1 (1.36R)" value={data.signal.targets.t1} variant="success" />
+                    <LevelCard label="Target 2 (2.73R)" value={data.signal.targets.t2} variant="success" />
+                    <LevelCard label="Target 3 (4.55R)" value={data.signal.targets.t3} variant="success" />
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-500">
+                    SL points: {data.signal.targets.slPoints.toFixed(0)} • R:R T1={data.signal.targets.rr1} T2={data.signal.targets.rr2} T3={data.signal.targets.rr3}
+                  </p>
+                </>
+              )}
             </div>
           )}
 
@@ -494,6 +508,43 @@ export default function Home() {
               </div>
             </div>
           )}
+
+          {/* OI Buildup (Angel One) */}
+          {(data?.oiBuildupLong?.length || data?.oiBuildupShort?.length) ? (
+            <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+              <h2 className="text-lg font-semibold text-emerald-400 mb-3">
+                OI Buildup
+              </h2>
+              <div className="grid gap-4 sm:grid-cols-2">
+                {data.oiBuildupLong?.length ? (
+                  <div>
+                    <h3 className="text-sm text-emerald-400/80 mb-2">Long Built Up</h3>
+                    <ul className="text-sm space-y-1">
+                      {data.oiBuildupLong.map((r) => (
+                        <li key={r.symbol} className="flex justify-between">
+                          <span className="text-zinc-400 truncate max-w-[180px]">{r.symbol}</span>
+                          <span className="text-emerald-400">OI +{r.oiChange.toLocaleString()}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {data.oiBuildupShort?.length ? (
+                  <div>
+                    <h3 className="text-sm text-red-400/80 mb-2">Short Built Up</h3>
+                    <ul className="text-sm space-y-1">
+                      {data.oiBuildupShort.map((r) => (
+                        <li key={r.symbol} className="flex justify-between">
+                          <span className="text-zinc-400 truncate max-w-[180px]">{r.symbol}</span>
+                          <span className="text-red-400">OI +{r.oiChange.toLocaleString()}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
 
           {/* OI Table & Strike Heatmap - NSE only */}
           {data?.oiTable && data.oiTable.length > 0 ? (

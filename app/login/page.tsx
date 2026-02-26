@@ -87,6 +87,16 @@ export default function LoginPage() {
             ← Back to dashboard
           </a>
         </p>
+        <p className="mt-4 text-center">
+          <a
+            href="/api/angel-one/verify-env"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-zinc-600 hover:text-zinc-500"
+          >
+            Verify env config
+          </a>
+        </p>
       </div>
     </div>
   );

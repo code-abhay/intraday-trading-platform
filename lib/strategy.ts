@@ -325,7 +325,7 @@ export function generateSignalFromPCR(
   pcrValue: number,
   underlyingValue: number,
   maxPainStrike?: number,
-  opts?: { pdh?: number; pdl?: number; pdc?: number; atr?: number; strikeStep?: number }
+  opts?: { pdh?: number; pdl?: number; pdc?: number; atr?: number; strikeStep?: number; greekDelta?: number }
 ): StrategySignal {
   let bias: StrategySignal["bias"] = "NEUTRAL";
   if (pcrValue > 1.2) bias = "BULLISH";
@@ -345,7 +345,7 @@ export function generateSignalFromPCR(
   const pdc = opts?.pdc ?? underlyingValue;
   const strikeStep = opts?.strikeStep ?? 50;
 
-  return generateSignal(pcr, mp, underlyingValue, { atr, pdh, pdl, pdc, strikeStep });
+  return generateSignal(pcr, mp, underlyingValue, { atr, pdh, pdl, pdc, strikeStep, greekDelta: opts?.greekDelta });
 }
 
 /**
@@ -355,7 +355,7 @@ export function generateSignal(
   pcr: PCRResult,
   maxPainStrike: number,
   underlyingValue: number,
-  opts?: { atr?: number; pdh?: number; pdl?: number; pdc?: number; strikeStep?: number }
+  opts?: { atr?: number; pdh?: number; pdl?: number; pdc?: number; strikeStep?: number; greekDelta?: number }
 ): StrategySignal {
   const strikeStep = opts?.strikeStep ?? 50;
   const atr = opts?.atr ?? underlyingValue * FALLBACK_ATR_PCT;
@@ -365,13 +365,16 @@ export function generateSignal(
 
   const entry = underlyingValue;
   const targets = computeTargetsStops(entry, atr, pcr.bias, strikeStep);
-  const optionsAdvisor = computeOptionsAdvisor(
+  let optionsAdvisor = computeOptionsAdvisor(
     underlyingValue,
     atr,
     pcr.bias,
     strikeStep,
     "Balanced"
   );
+  if (opts?.greekDelta != null) {
+    optionsAdvisor = { ...optionsAdvisor, delta: opts.greekDelta };
+  }
   const srLevels = computeSRLevels(pdh, pdl, pdc);
   const sentiment = computeSentiment(pcr.value);
 

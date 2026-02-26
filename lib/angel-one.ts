@@ -176,3 +176,97 @@ export async function angelOneGetLTP(
 /** NIFTY 50 index - from Angel One Scrip Master */
 export const NIFTY_INDEX_TOKEN = "99926000";
 export const NIFTY_INDEX_SYMBOL = "NIFTY"; // tradingsymbol from scrip master "name" field
+
+// --- Candle Data (Historical) ---
+export interface AngelOneCandleRow {
+  0: string; // timestamp
+  1: number; // open
+  2: number; // high
+  3: number; // low
+  4: number; // close
+  5: number; // volume
+}
+
+/**
+ * Get historical candle data for PDH/PDL/PDC and ATR.
+ * Docs: https://smartapi.angelbroking.com/docs/MarketData
+ */
+export async function angelOneGetCandleData(
+  jwtToken: string,
+  apiKey: string,
+  exchange: string,
+  symbolToken: string,
+  interval: "ONE_MINUTE" | "FIVE_MINUTE" | "FIFTEEN_MINUTE" | "ONE_DAY" = "ONE_DAY",
+  fromDate: string,
+  toDate: string
+): Promise<AngelOneCandleRow[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/historical/v1/getCandleData`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({
+        exchange,
+        symboltoken: symbolToken,
+        interval,
+        fromdate: fromDate,
+        todate: toDate,
+      }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneCandleRow[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch candle data");
+  }
+  return json.data ?? [];
+}
+
+// --- Option Greeks ---
+export interface AngelOneOptionGreekRow {
+  name: string;
+  expiry: string;
+  strikePrice: string | number;
+  optionType: "CE" | "PE";
+  delta: string | number;
+  gamma?: string | number;
+  theta?: string | number;
+  vega?: string | number;
+  impliedVolatility?: string | number;
+  tradeVolume?: string | number;
+}
+
+/**
+ * Get Option Greeks (Delta, IV, etc.) for an underlying.
+ * Docs: https://smartapi.angelbroking.com/docs/OptionGreeks
+ * Expiry format: DDMMMYYYY (e.g. "06MAR2025")
+ */
+export async function angelOneGetOptionGreeks(
+  jwtToken: string,
+  apiKey: string,
+  name: string,
+  expirydate: string
+): Promise<AngelOneOptionGreekRow[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/marketData/v1/optionGreek`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({ name, expirydate }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneOptionGreekRow[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch option greeks");
+  }
+  return json.data ?? [];
+}
