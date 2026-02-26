@@ -33,10 +33,10 @@ export interface AngelOneOIBuildupItem {
   symbolToken: string;
   ltp: string;
   netChange: string;
-  netChangePercent: string;
+  percentChange: string | number;
   tradingSymbol: string;
-  opnInterest: number;
-  netChangeOpnInterest: number;
+  opnInterest: string | number;
+  netChangeOpnInterest: string | number;
 }
 
 function getAngelHeaders(jwtToken: string, apiKey: string): Record<string, string> {
@@ -141,6 +141,14 @@ export async function angelOneGetOIBuildup(
   return json.data;
 }
 
+export interface AngelOneLTPData {
+  ltp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+}
+
 export async function angelOneGetLTP(
   jwtToken: string,
   apiKey: string,
@@ -148,6 +156,17 @@ export async function angelOneGetLTP(
   symbolToken: string,
   tradingSymbol: string
 ): Promise<number> {
+  const data = await angelOneGetLTPFull(jwtToken, apiKey, exchange, symbolToken, tradingSymbol);
+  return data.ltp;
+}
+
+export async function angelOneGetLTPFull(
+  jwtToken: string,
+  apiKey: string,
+  exchange: string,
+  symbolToken: string,
+  tradingSymbol: string
+): Promise<AngelOneLTPData> {
   const res = await fetch(
     `${BASE_URL}/rest/secure/angelbroking/order/v1/getLtpData`,
     {
@@ -163,19 +182,100 @@ export async function angelOneGetLTP(
 
   const json = (await res.json()) as {
     status: boolean;
-    data?: { ltp?: string | number };
+    data?: Record<string, string | number | undefined>;
     message?: string;
   };
   if (!json.status || !json.data) {
     throw new Error(json.message || "Failed to fetch LTP");
   }
-  const ltp = json.data.ltp;
-  return typeof ltp === "string" ? parseFloat(ltp) : (ltp ?? 0);
+  const num = (v: string | number | undefined) =>
+    typeof v === "string" ? parseFloat(v) || 0 : (v ?? 0);
+  return {
+    ltp: num(json.data.ltp),
+    open: num(json.data.open),
+    high: num(json.data.high),
+    low: num(json.data.low),
+    close: num(json.data.close),
+  };
 }
 
 /** NIFTY 50 index - from Angel One Scrip Master */
 export const NIFTY_INDEX_TOKEN = "99926000";
-export const NIFTY_INDEX_SYMBOL = "NIFTY"; // tradingsymbol from scrip master "name" field
+export const NIFTY_INDEX_SYMBOL = "NIFTY";
+
+// --- Live Market Data API (FULL / OHLC / LTP) ---
+// Docs: https://smartapi.angelbroking.com/docs/MarketData (Live Market Data section)
+
+export interface MarketQuoteFull {
+  exchange: string;
+  tradingSymbol: string;
+  symbolToken: string;
+  ltp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number; // previous day close
+  lastTradeQty: number;
+  exchFeedTime: string;
+  exchTradeTime: string;
+  netChange: number;
+  percentChange: number;
+  avgPrice: number;
+  tradeVolume: number;
+  opnInterest: number;
+  lowerCircuit: number;
+  upperCircuit: number;
+  totBuyQuan: number;
+  totSellQuan: number;
+  "52WeekLow": number;
+  "52WeekHigh": number;
+  depth?: {
+    buy: { price: number; quantity: number; orders: number }[];
+    sell: { price: number; quantity: number; orders: number }[];
+  };
+}
+
+/**
+ * Fetch real-time market data using the Live Market Data API.
+ * FULL mode gives LTP, today's OHLC, prev close, volume, OI, depth.
+ */
+export async function angelOneGetMarketQuote(
+  jwtToken: string,
+  apiKey: string,
+  exchange: string,
+  symbolToken: string,
+  mode: "FULL" | "OHLC" | "LTP" = "FULL"
+): Promise<MarketQuoteFull | null> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({
+        mode,
+        exchangeTokens: {
+          [exchange]: [symbolToken],
+        },
+      }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: {
+      fetched?: MarketQuoteFull[];
+      unfetched?: { exchange: string; symbolToken: string; message: string }[];
+    };
+    message?: string;
+  };
+
+  if (!json.status || !json.data?.fetched?.length) {
+    const unfetchedMsg = json.data?.unfetched?.[0]?.message;
+    throw new Error(unfetchedMsg || json.message || "Failed to fetch market quote");
+  }
+
+  return json.data.fetched[0] ?? null;
+}
 
 // --- Candle Data (Historical) ---
 export interface AngelOneCandleRow {

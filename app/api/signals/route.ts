@@ -10,7 +10,7 @@ import {
 import type { OptionChainRow } from "@/app/api/option-chain/route";
 import {
   angelOneGetPCR,
-  angelOneGetLTP,
+  angelOneGetMarketQuote,
   angelOneGetCandleData,
   angelOneGetOptionGreeks,
   angelOneGetOIBuildup,
@@ -145,21 +145,42 @@ async function getSignalsFromAngelOne(
     throw new Error(`${segment.label} not found in PCR. Available: ${symbols || "none"}`);
   }
 
-  // 2. LTP (underlying)
+  // 2. Live Market Data (FULL mode) - single call gives LTP, today's OHLC, prev close, volume, OI
   let underlyingValue = 0;
+  let todayOpen = 0;
+  let todayHigh = 0;
+  let todayLow = 0;
+  let prevClose = 0;
+  let tradeVolume = 0;
+  let totBuyQuan = 0;
+  let totSellQuan = 0;
+
   try {
-    underlyingValue = await angelOneGetLTP(
+    const quote = await angelOneGetMarketQuote(
       jwtToken,
       apiKey,
       segment.exchange,
       segment.angelToken,
-      segment.angelSymbol
+      "FULL"
     );
-  } catch {
+    if (quote) {
+      underlyingValue = quote.ltp;
+      todayOpen = quote.open;
+      todayHigh = quote.high;
+      todayLow = quote.low;
+      prevClose = quote.close; // "close" = previous day close per docs
+      tradeVolume = quote.tradeVolume;
+      totBuyQuan = quote.totBuyQuan;
+      totSellQuan = quote.totSellQuan;
+    }
+  } catch (e) {
+    console.warn("[signals] Market Quote (FULL) failed:", e);
     underlyingValue = segment.fallbackLTP;
   }
+  if (!underlyingValue) underlyingValue = segment.fallbackLTP;
 
-  // 3. Candle data for PDH/PDL/PDC and ATR (prior day)
+  // 3. Historical candle data for PDH/PDL/PDC and ATR
+  // prevClose from Market Quote = previous day close, but we also need previous day high/low
   let pdh: number | undefined;
   let pdl: number | undefined;
   let pdc: number | undefined;
@@ -167,13 +188,12 @@ async function getSignalsFromAngelOne(
 
   try {
     const now = new Date();
-    const toDate = new Date(now);
     const fromDate = new Date(now);
-    fromDate.setDate(fromDate.getDate() - 5); // Fetch last 5 days to ensure we get prior day
+    fromDate.setDate(fromDate.getDate() - 10);
     const fmt = (d: Date) =>
       `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
     const fromStr = `${fmt(fromDate)} 09:15`;
-    const toStr = `${fmt(toDate)} 15:30`;
+    const toStr = `${fmt(now)} 15:30`;
 
     const candles = await angelOneGetCandleData(
       jwtToken,
@@ -185,16 +205,25 @@ async function getSignalsFromAngelOne(
       toStr
     );
 
-    if (candles.length >= 1) {
-      // Use second-to-last if available (prior trading day), else last
-      const priorCandle = candles.length >= 2 ? candles[candles.length - 2] : candles[candles.length - 1];
-      pdh = priorCandle[2];
-      pdl = priorCandle[3];
-      pdc = priorCandle[4];
-      atr = Math.max((pdh - pdl) * 0.6, segment.strikeStep) || underlyingValue * 0.008;
+    if (candles.length >= 2) {
+      const prior = candles[candles.length - 2];
+      pdh = prior[2];
+      pdl = prior[3];
+      pdc = prior[4];
+
+      const ranges = candles.slice(-5).map((c) => c[2] - c[3]);
+      atr = ranges.reduce((s, r) => s + r, 0) / ranges.length;
     }
   } catch (e) {
     console.warn("[signals] Candle data failed:", e);
+  }
+
+  // Fallback: use Market Quote data if candle data failed
+  if (!pdh && prevClose > 0) {
+    pdh = todayHigh || underlyingValue;
+    pdl = todayLow || underlyingValue;
+    pdc = prevClose;
+    atr = Math.abs(todayHigh - todayLow) || underlyingValue * 0.008;
   }
 
   // 4. Option Greeks for real delta (NIFTY/BANKNIFTY/MIDCPNIFTY only; SENSEX may not support)
@@ -243,14 +272,36 @@ async function getSignalsFromAngelOne(
         .slice(0, 5)
         .map((r) => ({
           symbol: r.tradingSymbol ?? "",
-          oiChange: r.netChangeOpnInterest ?? 0,
-          priceChange: parseFloat(r.netChange ?? "0"),
+          oiChange: typeof r.netChangeOpnInterest === "string" ? parseFloat(r.netChangeOpnInterest) || 0 : (r.netChangeOpnInterest ?? 0),
+          priceChange: typeof r.percentChange === "string" ? parseFloat(r.percentChange) || 0 : (r.percentChange ?? 0),
         }));
     oiBuildupLong = filterRelevant(longUp);
     oiBuildupShort = filterRelevant(shortUp);
   } catch (e) {
     console.warn("[signals] OI Buildup failed:", e);
   }
+
+  const debugInfo = {
+    symbol,
+    pcr: pcrItem.pcr,
+    pcrTradingSymbol: pcrItem.tradingSymbol,
+    underlyingValue,
+    todayOpen,
+    todayHigh,
+    todayLow,
+    prevClose,
+    tradeVolume,
+    totBuyQuan,
+    totSellQuan,
+    pdh,
+    pdl,
+    pdc,
+    atr,
+    greekDelta,
+    oiLongCount: oiBuildupLong.length,
+    oiShortCount: oiBuildupShort.length,
+  };
+  console.log("[signals] Angel One data:", debugInfo);
 
   const signal = generateSignalFromPCR(
     pcrItem.pcr,
@@ -271,6 +322,8 @@ async function getSignalsFromAngelOne(
     symbol,
     underlyingValue,
     signal,
+    rawPCR: pcrItem.pcr,
+    pcrSymbol: pcrItem.tradingSymbol,
     maxPain: [
       {
         strike: Math.round(underlyingValue / step) * step,
@@ -280,6 +333,16 @@ async function getSignalsFromAngelOne(
     oiTable: undefined,
     oiBuildupLong,
     oiBuildupShort,
+    marketData: {
+      todayOpen,
+      todayHigh,
+      todayLow,
+      prevClose,
+      tradeVolume,
+      buyQty: totBuyQuan,
+      sellQty: totSellQuan,
+    },
+    debugData: debugInfo,
     timestamp: new Date().toISOString(),
   };
 }

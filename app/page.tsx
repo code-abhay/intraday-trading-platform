@@ -77,15 +77,28 @@ interface OIBuildupItem {
   priceChange: number;
 }
 
+interface MarketData {
+  todayOpen: number;
+  todayHigh: number;
+  todayLow: number;
+  prevClose: number;
+  tradeVolume: number;
+  buyQty: number;
+  sellQty: number;
+}
+
 interface SignalsResponse {
   source?: "angel_one" | "nse" | "demo";
   symbol: string;
   underlyingValue: number;
   signal: Signal;
+  rawPCR?: number;
+  pcrSymbol?: string;
   maxPain: { strike: number; totalPayout: number }[];
   oiTable?: OITableRow[];
   oiBuildupLong?: OIBuildupItem[];
   oiBuildupShort?: OIBuildupItem[];
+  marketData?: MarketData;
   timestamp: string;
 }
 
@@ -235,13 +248,14 @@ export default function Home() {
         <div className="space-y-6">
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             <Card
-              title="Underlying"
+              title="Underlying (LTP)"
               value={data ? data.underlyingValue.toFixed(2) : (loading ? "..." : "—")}
+              sub={data?.source === "angel_one" ? "Live" : data?.source === "nse" ? "NSE" : "Demo"}
             />
             <Card
               title="PCR"
-              value={data ? data.signal.pcr.value.toFixed(2) : (loading ? "..." : "—")}
-              sub={data?.signal.pcr.bias}
+              value={data ? (data.rawPCR ?? data.signal.pcr.value).toFixed(2) : (loading ? "..." : "—")}
+              sub={data?.pcrSymbol || data?.signal.pcr.bias}
             />
             <Card
               title="Max Pain"
@@ -253,6 +267,21 @@ export default function Home() {
               highlight={data?.signal.bias}
             />
           </div>
+
+          {/* Market Data from Angel One FULL mode */}
+          {data?.marketData && (
+            <div className="grid gap-4 sm:grid-cols-3 lg:grid-cols-6">
+              <Card title="Open" value={data.marketData.todayOpen.toFixed(2)} />
+              <Card title="High" value={data.marketData.todayHigh.toFixed(2)} />
+              <Card title="Low" value={data.marketData.todayLow.toFixed(2)} />
+              <Card title="Prev Close" value={data.marketData.prevClose.toFixed(2)} />
+              <Card title="Volume" value={formatNum(data.marketData.tradeVolume)} />
+              <Card
+                title="Buy / Sell Qty"
+                value={`${formatNum(data.marketData.buyQty)} / ${formatNum(data.marketData.sellQty)}`}
+              />
+            </div>
+          )}
 
           <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
             <div className="flex items-start justify-between gap-4">
@@ -658,6 +687,13 @@ function LogoutButton() {
       Logout
     </button>
   );
+}
+
+function formatNum(n: number): string {
+  if (n >= 1_00_00_000) return `${(n / 1_00_00_000).toFixed(2)} Cr`;
+  if (n >= 1_00_000) return `${(n / 1_00_000).toFixed(2)} L`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)} K`;
+  return String(n);
 }
 
 function LevelCard({

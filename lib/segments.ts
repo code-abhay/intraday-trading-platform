@@ -27,7 +27,14 @@ export const SEGMENTS: SegmentConfig[] = [
     angelSymbol: "NIFTY",
     angelPCRFilter: (s) => {
       const u = s.toUpperCase();
-      return u.startsWith("NIFTY") && !u.includes("BANK") && !u.includes("MIDCP");
+      return (
+        (u.startsWith("NIFTY") || u.startsWith("NIFTY ")) &&
+        !u.includes("BANK") &&
+        !u.includes("MIDCP") &&
+        !u.includes("FIN") &&
+        !u.includes("NXT") &&
+        !u.includes("IT")
+      );
     },
     exchange: "NSE",
     strikeStep: 50,
