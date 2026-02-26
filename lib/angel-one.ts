@@ -326,6 +326,39 @@ export async function angelOneGetCandleData(
   return json.data ?? [];
 }
 
+// --- Search Scrip (find option symbol token) ---
+export interface SearchScripResult {
+  exchange: string;
+  tradingsymbol: string;
+  symboltoken: string;
+}
+
+export async function angelOneSearchScrip(
+  jwtToken: string,
+  apiKey: string,
+  exchange: string,
+  searchscrip: string
+): Promise<SearchScripResult[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/order/v1/searchScrip`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({ exchange, searchscrip }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: SearchScripResult[];
+    message?: string;
+  };
+  if (!json.status || !json.data) {
+    return [];
+  }
+  return json.data;
+}
+
 // --- Option Greeks ---
 export interface AngelOneOptionGreekRow {
   name: string;

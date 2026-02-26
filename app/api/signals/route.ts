@@ -14,9 +14,10 @@ import {
   angelOneGetCandleData,
   angelOneGetOptionGreeks,
   angelOneGetOIBuildup,
+  angelOneSearchScrip,
   type AngelOneOptionGreekRow,
 } from "@/lib/angel-one";
-import { getExpiryCandidates } from "@/lib/expiry-utils";
+import { getExpiryCandidates, buildOptionSymbol } from "@/lib/expiry-utils";
 import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
 import { fetchYahooIndexPrice } from "@/lib/yahoo-indices";
 
@@ -340,8 +341,14 @@ async function getSignalsFromAngelOne(
           expiry
         );
         if (greeksData.length > 0) {
-          matchedExpiry = expiry;
-          console.log(`[signals] Option Greeks success for expiry ${expiry}: ${greeksData.length} rows`);
+          // Use the actual expiry from the response data if available
+          const firstRow = greeksData[0];
+          if (firstRow?.expiry) {
+            matchedExpiry = firstRow.expiry;
+          } else {
+            matchedExpiry = expiry;
+          }
+          console.log(`[signals] Option Greeks success for expiry ${expiry} (actual: ${matchedExpiry}): ${greeksData.length} rows`);
           break;
         }
       } catch (e) {
@@ -444,6 +451,86 @@ async function getSignalsFromAngelOne(
     }
   );
 
+  // 6. Fetch REAL option premium via SearchScrip + Market Quote
+  let realOptionPremium: number | undefined;
+  let optionSymbolName = "";
+  let optionSymbolToken = "";
+
+  if (signal.optionsAdvisor && matchedExpiry && signal.bias !== "NEUTRAL") {
+    const advisor = signal.optionsAdvisor;
+    const optType = advisor.side === "CALL" ? "CE" : "PE";
+    const optExchange = segment.exchange === "BSE" ? "BFO" : "NFO";
+    const tradingSymbol = buildOptionSymbol(segment.angelSymbol, matchedExpiry, advisor.strike, optType);
+
+    console.log(`[signals] Searching for option: ${optExchange}:${tradingSymbol}`);
+
+    try {
+      const scripResults = await angelOneSearchScrip(jwtToken, apiKey, optExchange, tradingSymbol);
+
+      if (scripResults.length > 0) {
+        const scrip = scripResults[0];
+        optionSymbolName = scrip.tradingsymbol;
+        optionSymbolToken = scrip.symboltoken;
+        console.log(`[signals] Found option scrip: ${scrip.tradingsymbol} token=${scrip.symboltoken}`);
+
+        // Get real LTP for this option
+        const optQuote = await angelOneGetMarketQuote(
+          jwtToken, apiKey, optExchange, scrip.symboltoken, "LTP"
+        );
+        if (optQuote && optQuote.ltp > 0) {
+          realOptionPremium = optQuote.ltp;
+          console.log(`[signals] Real option LTP: ₹${realOptionPremium}`);
+
+          // Override the estimated premium with real premium
+          signal.optionsAdvisor!.premium = realOptionPremium;
+          signal.optionsAdvisor!.recommendation =
+            `BUY ${advisor.strike} ${advisor.side} @ ₹${realOptionPremium}`;
+
+          // Recalculate option targets based on real premium
+          if (signal.optionsAdvisor!.optionTargets) {
+            signal.optionsAdvisor!.optionTargets = {
+              premiumEntry: realOptionPremium,
+              premiumSL: Math.round(realOptionPremium * 0.6),
+              premiumT1: Math.round(realOptionPremium * 1.5),
+              premiumT2: Math.round(realOptionPremium * 2.0),
+              premiumT3: Math.round(realOptionPremium * 2.5),
+              premiumTrailSL: Math.round(realOptionPremium * 1.2),
+            };
+          }
+        }
+      } else {
+        console.warn(`[signals] No scrip found for ${tradingSymbol}, trying partial search...`);
+        // Try partial search with just symbol + expiry
+        const partialSymbol = `${segment.angelSymbol}${matchedExpiry.slice(0, 2)}${matchedExpiry.slice(2, 5)}${matchedExpiry.slice(7, 9)}`;
+        const partialResults = await angelOneSearchScrip(jwtToken, apiKey, optExchange, `${partialSymbol}${advisor.strike}${optType}`);
+        if (partialResults.length > 0) {
+          const scrip = partialResults[0];
+          optionSymbolName = scrip.tradingsymbol;
+          optionSymbolToken = scrip.symboltoken;
+
+          const optQuote = await angelOneGetMarketQuote(jwtToken, apiKey, optExchange, scrip.symboltoken, "LTP");
+          if (optQuote && optQuote.ltp > 0) {
+            realOptionPremium = optQuote.ltp;
+            signal.optionsAdvisor!.premium = realOptionPremium;
+            signal.optionsAdvisor!.recommendation = `BUY ${advisor.strike} ${advisor.side} @ ₹${realOptionPremium}`;
+            if (signal.optionsAdvisor!.optionTargets) {
+              signal.optionsAdvisor!.optionTargets = {
+                premiumEntry: realOptionPremium,
+                premiumSL: Math.round(realOptionPremium * 0.6),
+                premiumT1: Math.round(realOptionPremium * 1.5),
+                premiumT2: Math.round(realOptionPremium * 2.0),
+                premiumT3: Math.round(realOptionPremium * 2.5),
+                premiumTrailSL: Math.round(realOptionPremium * 1.2),
+              };
+            }
+          }
+        }
+      }
+    } catch (e) {
+      console.warn("[signals] Option LTP fetch failed:", e);
+    }
+  }
+
   console.log("[signals] Angel One result:", {
     symbol,
     pcr: pcrItem.pcr,
@@ -453,10 +540,11 @@ async function getSignalsFromAngelOne(
     confidence: signal.confidence,
     underlyingValue,
     maxPainStrike,
+    matchedExpiry,
+    optionSymbol: optionSymbolName || "none",
+    realPremium: realOptionPremium ?? "estimated",
     greeksCount: greeksData.length,
     oiTableCount: oiTable.length,
-    oiLong: oiBuildupLong.length,
-    oiShort: oiBuildupShort.length,
   });
 
   return {
@@ -467,6 +555,7 @@ async function getSignalsFromAngelOne(
     rawPCR: pcrItem.pcr,
     pcrSymbol: pcrItem.tradingSymbol,
     expiry: matchedExpiry || "",
+    optionSymbol: optionSymbolName || "",
     maxPain: greeksMaxPain.length > 0 ? greeksMaxPain : [{ strike: maxPainStrike, totalPayout: 0 }],
     oiTable: oiTable.length > 0 ? oiTable : undefined,
     oiBuildupLong,

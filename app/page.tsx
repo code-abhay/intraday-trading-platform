@@ -149,6 +149,7 @@ interface SignalsResponse {
   rawPCR?: number;
   pcrSymbol?: string;
   expiry?: string;
+  optionSymbol?: string;
   maxPain: { strike: number; totalPayout: number }[];
   oiTable?: OITableRow[];
   oiBuildupLong?: OIBuildupItem[];
@@ -443,9 +444,13 @@ export default function Home() {
                   <span className="text-zinc-600 text-xs">{sig.optionsAdvisor.moneyness}</span>
                 </div>
                 <div className="rounded bg-zinc-800 px-3 py-2">
-                  <span className="text-zinc-500 text-xs">Premium (approx)</span>
+                  <span className="text-zinc-500 text-xs">
+                    Premium {data?.optionSymbol ? "(Live)" : "(est.)"}
+                  </span>
                   <div className="font-bold text-lg">₹{sig.optionsAdvisor.premium}</div>
-                  <span className="text-zinc-600 text-xs">Mode: {sig.optionsAdvisor.mode}</span>
+                  <span className="text-zinc-600 text-xs">
+                    {data?.optionSymbol || `Mode: ${sig.optionsAdvisor.mode}`}
+                  </span>
                 </div>
                 <div className="rounded bg-zinc-800 px-3 py-2">
                   <span className="text-zinc-500 text-xs">Delta</span>
