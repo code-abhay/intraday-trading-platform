@@ -22,6 +22,7 @@ export interface SegmentConfig {
   angelPCRFilter: (tradingSymbol: string) => boolean;
   exchange: "NSE" | "BSE";
   strikeStep: number;
+  lotSize: number;
   fallbackLTP: number;
   expiryDay: ExpiryDay;
 }
@@ -46,6 +47,7 @@ export const SEGMENTS: SegmentConfig[] = [
     },
     exchange: "NSE",
     strikeStep: 50,
+    lotSize: 65,
     fallbackLTP: 25500,
     expiryDay: 2, // Tuesday
   },
@@ -61,6 +63,7 @@ export const SEGMENTS: SegmentConfig[] = [
     },
     exchange: "NSE",
     strikeStep: 100,
+    lotSize: 30,
     fallbackLTP: 61000,
     expiryDay: 3, // Wednesday
   },
@@ -73,6 +76,7 @@ export const SEGMENTS: SegmentConfig[] = [
     angelPCRFilter: (s) => s.toUpperCase().includes("SENSEX"),
     exchange: "BSE",
     strikeStep: 100,
+    lotSize: 20,
     fallbackLTP: 82500,
     expiryDay: 5, // Friday
   },
@@ -88,6 +92,7 @@ export const SEGMENTS: SegmentConfig[] = [
     },
     exchange: "NSE",
     strikeStep: 25,
+    lotSize: 120,
     fallbackLTP: 12500,
     expiryDay: 1, // Monday
   },
