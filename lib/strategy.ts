@@ -1,5 +1,6 @@
 import type { OptionChainRow } from "@/app/api/option-chain/route";
 import type { ExpiryDay } from "@/lib/expiry-utils";
+import type { SegmentStrategyConfig } from "@/lib/segments";
 
 // ---------- Interfaces ----------
 
@@ -113,6 +114,19 @@ export interface Sentiment {
   components: { name: string; score: number; weight: number }[];
 }
 
+export interface OrbContext {
+  high: number;
+  low: number;
+  breakout: "ABOVE_ORB" | "BELOW_ORB" | "INSIDE_ORB";
+  isBreakout: boolean;
+}
+
+export interface CprContext {
+  widthPct: number;
+  type: "NARROW_TREND" | "NORMAL" | "WIDE_RANGE";
+  position: "ABOVE_CPR" | "BELOW_CPR" | "INSIDE_CPR";
+}
+
 export interface StrategySignal {
   bias: "BULLISH" | "BEARISH" | "NEUTRAL";
   biasStrength: "STRONG" | "MODERATE" | "MILD" | "NEUTRAL";
@@ -138,6 +152,8 @@ export interface StrategySignal {
   partialExits?: PartialExitPlan;
   tradeDirection?: string;
   advancedFilters?: AdvancedFilters;
+  orbContext?: OrbContext;
+  cprContext?: CprContext;
   signalExpired?: boolean;
   alternateBlocked?: boolean;
   alternateReason?: string;
@@ -194,6 +210,27 @@ export function computeMaxPain(data: OptionChainRow[], underlyingValue: number):
 
 const HIGH_VOL_THRESHOLD = 1.5;
 const LOW_VOL_THRESHOLD = 0.7;
+const DEFAULT_STRATEGY_PROFILE: SegmentStrategyConfig = {
+  rsiBullishThreshold: 52,
+  rsiBearishThreshold: 48,
+  pcrBullishThreshold: 1.2,
+  pcrBearishThreshold: 0.8,
+  choppinessThreshold: 61.8,
+  biasStrongThreshold: 6,
+  biasModerateThreshold: 3,
+  orbBreakoutBufferPct: 0.0005,
+  cprNarrowThresholdPct: 0.2,
+  cprWideThresholdPct: 0.6,
+};
+
+function withStrategyDefaults(
+  profile?: SegmentStrategyConfig | null
+): SegmentStrategyConfig {
+  return {
+    ...DEFAULT_STRATEGY_PROFILE,
+    ...(profile ?? {}),
+  };
+}
 
 export function computeVolatility(atr: number, atrSma: number, baseStopMult = 1.1): VolatilityInfo {
   const ratio = atrSma > 0 ? atr / atrSma : 1;
@@ -286,7 +323,11 @@ function computeVWAP(candles: CandleData[]): number {
   return cumVol > 0 ? cumTPV / cumVol : candles[candles.length - 1]?.close ?? 0;
 }
 
-export function computeTechnicalIndicators(candles: CandleData[]): TechnicalIndicators | null {
+export function computeTechnicalIndicators(
+  candles: CandleData[],
+  rsiBullishThreshold = 52,
+  rsiBearishThreshold = 48
+): TechnicalIndicators | null {
   if (candles.length < 30) return null;
   const closes = candles.map((c) => c.close);
   const ltp = closes[closes.length - 1];
@@ -297,7 +338,11 @@ export function computeTechnicalIndicators(candles: CandleData[]): TechnicalIndi
 
   const rsiValue = computeRSI(closes, 14);
   const rsiSignal: "BULL" | "BEAR" | "NEUTRAL" =
-    rsiValue >= 52 && rsiValue < 80 ? "BULL" : rsiValue <= 48 && rsiValue > 20 ? "BEAR" : "NEUTRAL";
+    rsiValue >= rsiBullishThreshold && rsiValue < 80
+      ? "BULL"
+      : rsiValue <= rsiBearishThreshold && rsiValue > 20
+        ? "BEAR"
+        : "NEUTRAL";
 
   const macd = computeMACD(closes, 12, 26, 9);
   const macdBias: "BULL" | "BEAR" = macd.hist > 0 ? "BULL" : "BEAR";
@@ -415,8 +460,13 @@ export function computeSentiment(
 
 export function computeMultiFactorBias(
   pcrValue: number, priceAction?: PriceAction,
-  tech?: TechnicalIndicators | null, filters?: AdvancedFilters | null,
+  tech?: TechnicalIndicators | null,
+  filters?: AdvancedFilters | null,
+  profile?: SegmentStrategyConfig | null,
+  orbContext?: OrbContext | null,
+  cprContext?: CprContext | null,
 ): { bias: "BULLISH" | "BEARISH" | "NEUTRAL"; strength: "STRONG" | "MODERATE" | "MILD" | "NEUTRAL"; confidence: number } {
+  const cfg = withStrategyDefaults(profile);
   let bullPoints = 0;
   let bearPoints = 0;
 
@@ -426,8 +476,8 @@ export function computeMultiFactorBias(
     if (tech.emaTrend === "BULL") bullPoints += 3; else bearPoints += 3;
 
     // RSI (weight: 2 points)
-    if (tech.rsiValue >= 52 && tech.rsiValue < 80) bullPoints += 2;
-    else if (tech.rsiValue <= 48 && tech.rsiValue > 20) bearPoints += 2;
+    if (tech.rsiValue >= cfg.rsiBullishThreshold && tech.rsiValue < 80) bullPoints += 2;
+    else if (tech.rsiValue <= cfg.rsiBearishThreshold && tech.rsiValue > 20) bearPoints += 2;
 
     // MACD histogram (weight: 2 points)
     if (tech.macdHist > 0) bullPoints += 2; else bearPoints += 2;
@@ -455,18 +505,38 @@ export function computeMultiFactorBias(
   }
 
   // PCR (weight: 1 point — supporting, NOT dominant)
-  if (pcrValue > 1.2) bullPoints += 1;
-  else if (pcrValue < 0.8) bearPoints += 1;
+  if (pcrValue > cfg.pcrBullishThreshold) bullPoints += 1;
+  else if (pcrValue < cfg.pcrBearishThreshold) bearPoints += 1;
+
+  // ORB confirmation adds conviction only on clear breakout.
+  if (orbContext?.isBreakout) {
+    if (orbContext.breakout === "ABOVE_ORB") bullPoints += 1;
+    if (orbContext.breakout === "BELOW_ORB") bearPoints += 1;
+  }
+
+  // CPR context helps filter trend-vs-range quality.
+  if (cprContext) {
+    if (cprContext.position === "ABOVE_CPR") bullPoints += 1;
+    if (cprContext.position === "BELOW_CPR") bearPoints += 1;
+
+    if (cprContext.type === "NARROW_TREND") {
+      if (cprContext.position === "ABOVE_CPR") bullPoints += 1;
+      if (cprContext.position === "BELOW_CPR") bearPoints += 1;
+    } else if (cprContext.type === "WIDE_RANGE") {
+      bullPoints = Math.max(0, bullPoints - 1);
+      bearPoints = Math.max(0, bearPoints - 1);
+    }
+  }
 
   const net = bullPoints - bearPoints;
   const total = bullPoints + bearPoints;
   const baseConfidence = total > 0 ? Math.round((Math.abs(net) / total) * 50 + 50) : 50;
 
-  if (net >= 6) return { bias: "BULLISH", strength: "STRONG", confidence: Math.min(92, baseConfidence) };
-  if (net >= 3) return { bias: "BULLISH", strength: "MODERATE", confidence: baseConfidence };
+  if (net >= cfg.biasStrongThreshold) return { bias: "BULLISH", strength: "STRONG", confidence: Math.min(92, baseConfidence) };
+  if (net >= cfg.biasModerateThreshold) return { bias: "BULLISH", strength: "MODERATE", confidence: baseConfidence };
   if (net >= 1) return { bias: "BULLISH", strength: "MILD", confidence: baseConfidence };
-  if (net <= -6) return { bias: "BEARISH", strength: "STRONG", confidence: Math.min(92, baseConfidence) };
-  if (net <= -3) return { bias: "BEARISH", strength: "MODERATE", confidence: baseConfidence };
+  if (net <= -cfg.biasStrongThreshold) return { bias: "BEARISH", strength: "STRONG", confidence: Math.min(92, baseConfidence) };
+  if (net <= -cfg.biasModerateThreshold) return { bias: "BEARISH", strength: "MODERATE", confidence: baseConfidence };
   if (net <= -1) return { bias: "BEARISH", strength: "MILD", confidence: baseConfidence };
   return { bias: "NEUTRAL", strength: "NEUTRAL", confidence: 50 };
 }
@@ -771,7 +841,10 @@ export interface AdvancedFilters {
   rqkConfirmsBear: boolean;
 }
 
-export function computeAdvancedFilters(candles: CandleData[]): AdvancedFilters {
+export function computeAdvancedFilters(
+  candles: CandleData[],
+  choppinessThreshold = 61.8
+): AdvancedFilters {
   const closes = candles.map((c) => c.close);
   const highs = candles.map((c) => c.high);
   const lows = candles.map((c) => c.low);
@@ -784,7 +857,7 @@ export function computeAdvancedFilters(candles: CandleData[]): AdvancedFilters {
     rangeFilter: rf,
     rqk,
     choppiness: parseFloat(chop.toFixed(1)),
-    isChoppy: chop > 61.8,
+    isChoppy: chop > choppinessThreshold,
     rfConfirmsBull: rf.upward,
     rfConfirmsBear: rf.downward,
     rqkConfirmsBull: rqk.uptrend,
@@ -861,6 +934,35 @@ export function computeSRLevels(pdh: number, pdl: number, pdc: number): SRLevels
   return { pdh, pdl, pdc, pivot, cprTC, cprBC, r1: 2 * pivot - pdl, r2: pivot + range, s1: 2 * pivot - pdh, s2: pivot - range, camH3: pdc + range * 1.1 / 4, camL3: pdc - range * 1.1 / 4 };
 }
 
+export function computeCprContext(
+  srLevels: SRLevels,
+  ltp: number,
+  profile?: SegmentStrategyConfig | null
+): CprContext {
+  const cfg = withStrategyDefaults(profile);
+  const widthPct =
+    (Math.abs(srLevels.cprTC - srLevels.cprBC) / Math.max(1, srLevels.pdc)) *
+    100;
+  const type: CprContext["type"] =
+    widthPct <= cfg.cprNarrowThresholdPct
+      ? "NARROW_TREND"
+      : widthPct >= cfg.cprWideThresholdPct
+        ? "WIDE_RANGE"
+        : "NORMAL";
+  const position: CprContext["position"] =
+    ltp > srLevels.cprTC
+      ? "ABOVE_CPR"
+      : ltp < srLevels.cprBC
+        ? "BELOW_CPR"
+        : "INSIDE_CPR";
+
+  return {
+    widthPct: parseFloat(widthPct.toFixed(3)),
+    type,
+    position,
+  };
+}
+
 // ---------- Signal Generator ----------
 
 export interface GenerateSignalOpts {
@@ -874,6 +976,9 @@ export interface GenerateSignalOpts {
   bestGreekStrike?: GreekStrikeData | null;
   advancedFilters?: AdvancedFilters | null;
   technicalIndicators?: TechnicalIndicators | null;
+  strategyProfile?: SegmentStrategyConfig | null;
+  orbContext?: OrbContext | null;
+  cprContext?: CprContext | null;
   symbol?: string;
 }
 
@@ -886,11 +991,33 @@ export function generateSignalFromPCR(
   const pdl = opts?.pdl ?? underlyingValue * 0.994;
   const pdc = opts?.pdc ?? underlyingValue;
   const strikeStep = opts?.strikeStep ?? 50;
+  const profile = withStrategyDefaults(opts?.strategyProfile);
 
   const tech = opts?.technicalIndicators ?? null;
   const filters = opts?.advancedFilters ?? null;
-  let { bias, strength, confidence } = computeMultiFactorBias(pcrValue, opts?.priceAction, tech, filters);
-  const pcr: PCRResult = { value: pcrValue, bias: pcrValue > 1.05 ? "BULLISH" : pcrValue < 0.95 ? "BEARISH" : "NEUTRAL", callOI: 0, putOI: 0 };
+  const srLevels = computeSRLevels(pdh, pdl, pdc);
+  const cprContext =
+    opts?.cprContext ?? computeCprContext(srLevels, underlyingValue, profile);
+  let { bias, strength, confidence } = computeMultiFactorBias(
+    pcrValue,
+    opts?.priceAction,
+    tech,
+    filters,
+    profile,
+    opts?.orbContext,
+    cprContext
+  );
+  const pcr: PCRResult = {
+    value: pcrValue,
+    bias:
+      pcrValue > profile.pcrBullishThreshold
+        ? "BULLISH"
+        : pcrValue < profile.pcrBearishThreshold
+          ? "BEARISH"
+          : "NEUTRAL",
+    callOI: 0,
+    putOI: 0,
+  };
   const atrSma = opts?.atrSma ?? atr;
   const volInfo = computeVolatility(atr, atrSma);
   const signalStrength = computeSignalStrength(pcrValue, opts?.priceAction, volInfo.regime, opts?.oiData?.longCount, opts?.oiData?.shortCount, tech, filters);
@@ -928,7 +1055,6 @@ export function generateSignalFromPCR(
     opts?.bestGreekStrike,
   );
 
-  const srLevels = computeSRLevels(pdh, pdl, pdc);
   const sentiment = computeSentiment(pcrValue, opts?.priceAction, opts?.oiData, volInfo.regime, tech);
   const partialExits = bias !== "NEUTRAL" ? computePartialExits(2000, targets.slPoints) : undefined;
   const tradeDirection = bias === "BULLISH" ? "Long Only" : bias === "BEARISH" ? "Short Only" : "Both (Wait)";
@@ -940,7 +1066,13 @@ export function generateSignalFromPCR(
     : "";
   const expiryNote = signalExpired ? " | EXPIRED" : "";
   const altNote = alternateBlocked ? " | ALT-BLOCKED" : "";
-  const summary = `${biasLabel}${strengthLabel} | PCR ${pcrValue.toFixed(2)} | Strength: ${signalStrength.score}/${signalStrength.max} | Vol: ${volInfo.regime} | Max Pain: ${mp}${filterStatus}${expiryNote}${altNote}`;
+  const orbNote = opts?.orbContext
+    ? ` | ORB:${opts.orbContext.breakout}`
+    : "";
+  const cprNote = cprContext
+    ? ` | CPR:${cprContext.position}/${cprContext.type}`
+    : "";
+  const summary = `${biasLabel}${strengthLabel} | PCR ${pcrValue.toFixed(2)} | Strength: ${signalStrength.score}/${signalStrength.max} | Vol: ${volInfo.regime} | Max Pain: ${mp}${filterStatus}${orbNote}${cprNote}${expiryNote}${altNote}`;
 
   return {
     bias, biasStrength: strength, entry, confidence,
@@ -951,6 +1083,8 @@ export function generateSignalFromPCR(
     bullishTargets, bearishTargets, optionsAdvisor, srLevels, sentiment,
     signalStrength, volatility: volInfo, partialExits, tradeDirection,
     advancedFilters: filters ?? undefined,
+    orbContext: opts?.orbContext ?? undefined,
+    cprContext,
     signalExpired, alternateBlocked, alternateReason,
   };
 }

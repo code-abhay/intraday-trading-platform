@@ -2,7 +2,12 @@
 
 import { useEffect, useState, useCallback, useMemo } from "react";
 import { SEGMENTS, type SegmentId, getSegment } from "@/lib/segments";
-import { isMarketOpen, getMarketStatusMessage } from "@/lib/utils";
+import {
+  isMarketOpen,
+  getMarketStatusMessage,
+  isTradeEntryWindow,
+  getTradeEntryWindowMessage,
+} from "@/lib/utils";
 import { useTradeSync } from "@/lib/use-trade-sync";
 import { AppHeader, SegmentSelector } from "@/components/app-header";
 import { StatCard } from "@/components/stat-card";
@@ -32,6 +37,22 @@ import {
 const TRADES_KEY = "paper_trades_v3";
 const SETTINGS_KEY = "paper_trade_settings";
 const DEFAULT_CAPITAL = 100000;
+const MAX_OPEN_TRADES = 3;
+const MAX_OPEN_TRADES_PER_SEGMENT = 1;
+const MIN_SIGNAL_CONFIDENCE = 60;
+const MIN_SIGNAL_STRENGTH = 5;
+const DAILY_LOSS_LIMIT = -3000;
+const LOSS_COOLDOWN_MS = 10 * 60 * 1000;
+const MAX_DAILY_TRADES = 8;
+const MAX_DAILY_LOSS_TRADES = 3;
+const MAX_DAILY_CONSECUTIVE_LOSSES = 3;
+const SLIPPAGE_PCT_PER_SIDE = 0.0015; // 0.15%
+const BROKERAGE_PER_ORDER = 20;
+const EXCHANGE_CHARGE_RATE = 0.00053;
+const STT_SELL_RATE = 0.0005;
+const SEBI_RATE = 0.000001;
+const STAMP_DUTY_BUY_RATE = 0.00003;
+const GST_RATE = 0.18;
 
 interface PaperTrade {
   id: string; segment: SegmentId; segmentLabel: string; strike: number; side: "CALL" | "PUT";
@@ -44,6 +65,48 @@ interface PaperTrade {
 }
 
 interface Settings { autoExecute: boolean; }
+
+function toIstDateKey(dateInput: string | Date): string {
+  const date = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (Number.isNaN(date.getTime())) return "";
+  const istMs = date.getTime() + 330 * 60 * 1000;
+  const istDate = new Date(istMs);
+  const y = istDate.getUTCFullYear();
+  const m = String(istDate.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(istDate.getUTCDate()).padStart(2, "0");
+  return `${y}-${m}-${d}`;
+}
+
+function estimateTradingCosts(
+  entryPremium: number,
+  exitPremium: number,
+  qty: number,
+  lotSize: number
+): number {
+  const buyTurnover = Math.max(0, entryPremium) * qty * lotSize;
+  const sellTurnover = Math.max(0, exitPremium) * qty * lotSize;
+  const totalTurnover = buyTurnover + sellTurnover;
+  const brokerage = BROKERAGE_PER_ORDER * 2;
+  const exchangeCharges = totalTurnover * EXCHANGE_CHARGE_RATE;
+  const stt = sellTurnover * STT_SELL_RATE;
+  const sebi = totalTurnover * SEBI_RATE;
+  const stampDuty = buyTurnover * STAMP_DUTY_BUY_RATE;
+  const gst = (brokerage + exchangeCharges) * GST_RATE;
+  return brokerage + exchangeCharges + stt + sebi + stampDuty + gst;
+}
+
+function computeNetPnl(
+  entryPremium: number,
+  currentExitPremium: number,
+  qty: number,
+  lotSize: number
+): number {
+  const effectiveEntry = Math.max(0, entryPremium) * (1 + SLIPPAGE_PCT_PER_SIDE);
+  const effectiveExit = Math.max(0, currentExitPremium) * (1 - SLIPPAGE_PCT_PER_SIDE);
+  const gross = (effectiveExit - effectiveEntry) * qty * lotSize;
+  const costs = estimateTradingCosts(effectiveEntry, effectiveExit, qty, lotSize);
+  return gross - costs;
+}
 
 function loadTrades(): PaperTrade[] {
   if (typeof window === "undefined") return [];
@@ -63,6 +126,9 @@ function saveSettings(s: Settings) {
 interface LiveQuote {
   segment: SegmentId; ltp: number; bias: string; optionStrike?: number; optionSide?: string;
   optionPremium?: number; optionDelta?: number; expiry?: string;
+  confidence?: number; signalStrengthScore?: number; signalStrengthMax?: number;
+  signalExpired?: boolean; alternateBlocked?: boolean; alternateReason?: string;
+  isChoppy?: boolean;
   optionTargets?: { premiumEntry: number; premiumSL: number; premiumT1: number; premiumT2: number; premiumT3: number; premiumTrailSL: number; };
 }
 
@@ -88,9 +154,83 @@ export default function PaperTradePage() {
   const openTrades = trades.filter((t) => t.status === "OPEN");
   const closedTrades = trades.filter((t) => t.status !== "OPEN");
   const totalInvested = openTrades.reduce((s, t) => s + t.invested, 0);
-  const unrealizedPnl = openTrades.reduce((s, t) => s + t.pnl, 0);
-  const realizedPnl = closedTrades.reduce((s, t) => s + t.pnl, 0);
+  const unrealizedPnl = openTrades.reduce(
+    (s, t) =>
+      s +
+      computeNetPnl(t.entryPremium, t.currentPremium, t.qty, t.lotSize),
+    0
+  );
+  const realizedPnl = closedTrades.reduce((s, t) => {
+    const exitPremium = t.exitPremium ?? t.currentPremium ?? t.entryPremium;
+    return s + computeNetPnl(t.entryPremium, exitPremium, t.qty, t.lotSize);
+  }, 0);
+  const todayKey = toIstDateKey(new Date());
+  const todaysTrades = useMemo(
+    () => trades.filter((t) => toIstDateKey(t.createdAt) === todayKey),
+    [todayKey, trades]
+  );
+  const todaysClosedTrades = useMemo(
+    () =>
+      closedTrades.filter(
+        (t) => toIstDateKey(t.closedAt ?? t.createdAt) === todayKey
+      ),
+    [closedTrades, todayKey]
+  );
+  const todayRealizedPnl = useMemo(
+    () =>
+      todaysClosedTrades.reduce((sum, t) => {
+        const exitPremium = t.exitPremium ?? t.currentPremium ?? t.entryPremium;
+        return (
+          sum + computeNetPnl(t.entryPremium, exitPremium, t.qty, t.lotSize)
+        );
+      }, 0),
+    [todaysClosedTrades]
+  );
+  const todayLossCount = useMemo(
+    () =>
+      todaysClosedTrades.filter((t) => {
+        const exitPremium = t.exitPremium ?? t.currentPremium ?? t.entryPremium;
+        return (
+          computeNetPnl(t.entryPremium, exitPremium, t.qty, t.lotSize) < 0
+        );
+      }).length,
+    [todaysClosedTrades]
+  );
+  const todayConsecutiveLosses = useMemo(() => {
+    const ordered = [...todaysClosedTrades].sort(
+      (a, b) =>
+        Date.parse(a.closedAt ?? a.createdAt) -
+        Date.parse(b.closedAt ?? b.createdAt)
+    );
+    let streak = 0;
+    for (let i = ordered.length - 1; i >= 0; i--) {
+      const t = ordered[i];
+      const exitPremium = t.exitPremium ?? t.currentPremium ?? t.entryPremium;
+      const pnl = computeNetPnl(t.entryPremium, exitPremium, t.qty, t.lotSize);
+      if (pnl < 0) streak++;
+      else break;
+    }
+    return streak;
+  }, [todaysClosedTrades]);
+  const todayTradeCount = todaysTrades.length;
   const available = DEFAULT_CAPITAL + realizedPnl - totalInvested;
+  const entryWindowOpen = isTradeEntryWindow();
+  const entryWindowMessage = getTradeEntryWindowMessage();
+  const activeSegmentConfig = getSegment(activeSegment);
+  const openTradesInSegment = openTrades.filter((t) => t.segment === activeSegment).length;
+  const lastLossTimestamp = useMemo(() => {
+    return closedTrades.reduce((latest, t) => {
+      const exitPremium = t.exitPremium ?? t.currentPremium ?? t.entryPremium;
+      const pnl = computeNetPnl(t.entryPremium, exitPremium, t.qty, t.lotSize);
+      if (pnl >= 0) return latest;
+      const ts = Date.parse(t.closedAt ?? t.createdAt);
+      return Number.isFinite(ts) ? Math.max(latest, ts) : latest;
+    }, 0);
+  }, [closedTrades]);
+  const cooldownRemainingMs =
+    lastLossTimestamp > 0
+      ? Math.max(0, LOSS_COOLDOWN_MS - (Date.now() - lastLossTimestamp))
+      : 0;
   const openSegmentsKey = useMemo(() => {
     const openSegs = new Set<SegmentId>();
     for (const t of trades) {
@@ -112,13 +252,13 @@ export default function PaperTradePage() {
       if (cp <= t.activeSL) {
         changed = true;
         const exitStatus: PaperTrade["status"] = t.t1Reached ? "TRAIL_SL" : "SL_HIT";
-        const pnl = (cp - t.entryPremium) * t.qty * t.lotSize;
+        const pnl = computeNetPnl(t.entryPremium, cp, t.qty, t.lotSize);
         addLog(`${t.segmentLabel} ${t.strike} ${t.side}: ${exitStatus} @ ₹${cp} (P&L ${pnl >= 0 ? "+" : ""}₹${Math.round(pnl)})`);
         return { ...t, status: exitStatus, pnl, exitPremium: cp, closedAt: new Date().toISOString(), exitReason: `Auto ${exitStatus}` };
       }
       if (cp >= t.t3Premium) {
         changed = true;
-        const pnl = (cp - t.entryPremium) * t.qty * t.lotSize;
+        const pnl = computeNetPnl(t.entryPremium, cp, t.qty, t.lotSize);
         addLog(`${t.segmentLabel} ${t.strike} ${t.side}: T3 HIT @ ₹${cp} (P&L +₹${Math.round(pnl)})`);
         return { ...t, status: "T3_HIT" as const, t1Reached: true, t2Reached: true, pnl, exitPremium: cp, closedAt: new Date().toISOString(), exitReason: "Auto T3" };
       }
@@ -126,12 +266,23 @@ export default function PaperTradePage() {
         changed = true;
         const newTrailSL = Math.round(t.t2Premium * 0.9);
         addLog(`${t.segmentLabel} ${t.strike} ${t.side}: T2 reached, Trail SL → ₹${newTrailSL}`);
-        return { ...t, t1Reached: true, t2Reached: true, activeSL: newTrailSL, pnl: (cp - t.entryPremium) * t.qty * t.lotSize };
+        return {
+          ...t,
+          t1Reached: true,
+          t2Reached: true,
+          activeSL: newTrailSL,
+          pnl: computeNetPnl(t.entryPremium, cp, t.qty, t.lotSize),
+        };
       }
       if (!t.t1Reached && cp >= t.t1Premium) {
         changed = true;
         addLog(`${t.segmentLabel} ${t.strike} ${t.side}: T1 reached, SL → ₹${t.trailSLPremium}`);
-        return { ...t, t1Reached: true, activeSL: t.trailSLPremium, pnl: (cp - t.entryPremium) * t.qty * t.lotSize };
+        return {
+          ...t,
+          t1Reached: true,
+          activeSL: t.trailSLPremium,
+          pnl: computeNetPnl(t.entryPremium, cp, t.qty, t.lotSize),
+        };
       }
       return t;
     });
@@ -150,6 +301,13 @@ export default function PaperTradePage() {
         segment: seg, ltp: json.underlyingValue, bias: json.signal?.bias ?? "NEUTRAL",
         optionStrike: json.signal?.optionsAdvisor?.strike, optionSide: json.signal?.optionsAdvisor?.side,
         optionPremium: json.signal?.optionsAdvisor?.premium, optionDelta: json.signal?.optionsAdvisor?.delta,
+        confidence: json.signal?.confidence ?? 0,
+        signalStrengthScore: json.signal?.signalStrength?.score ?? 0,
+        signalStrengthMax: json.signal?.signalStrength?.max ?? 0,
+        signalExpired: Boolean(json.signal?.signalExpired),
+        alternateBlocked: Boolean(json.signal?.alternateBlocked),
+        alternateReason: json.signal?.alternateReason,
+        isChoppy: Boolean(json.signal?.advancedFilters?.isChoppy),
         expiry: json.expiry, optionTargets: json.signal?.optionsAdvisor?.optionTargets,
       };
       setQuotes((prev) => ({ ...prev, [seg]: q }));
@@ -159,11 +317,27 @@ export default function PaperTradePage() {
         const updated = prev.map((t) => {
           if (t.status !== "OPEN" || t.segment !== seg) return t;
           hasOpenTradeForSegment = true;
-          const delta = q.optionDelta ?? 0.5;
-          const entryUnd = t.entryUnderlying || t.strike;
-          const premiumChange = (json.underlyingValue - entryUnd) * delta * (t.side === "CALL" ? 1 : -1);
-          const newPremium = Math.max(1, Math.round(t.entryPremium + premiumChange));
-          const nextPnl = (newPremium - t.entryPremium) * t.qty * t.lotSize;
+          const hasLivePremiumForTrade =
+            q.optionStrike === t.strike &&
+            q.optionSide === t.side &&
+            typeof q.optionPremium === "number" &&
+            q.optionPremium > 0;
+          let newPremium: number;
+          if (hasLivePremiumForTrade) {
+            newPremium = Math.max(1, Math.round(q.optionPremium ?? 0));
+          } else {
+            const delta = q.optionDelta ?? 0.5;
+            const entryUnd = t.entryUnderlying || t.strike;
+            const premiumChange =
+              (json.underlyingValue - entryUnd) * delta * (t.side === "CALL" ? 1 : -1);
+            newPremium = Math.max(1, Math.round(t.entryPremium + premiumChange));
+          }
+          const nextPnl = computeNetPnl(
+            t.entryPremium,
+            newPremium,
+            t.qty,
+            t.lotSize
+          );
           if (newPremium === t.currentPremium && nextPnl === t.pnl) return t;
           quoteUpdated = true;
           return { ...t, currentPremium: newPremium, pnl: nextPnl };
@@ -192,12 +366,79 @@ export default function PaperTradePage() {
   }, [activeSegment, fetchQuote, marketOpen, openSegmentsKey]);
 
   const q = quotes[activeSegment];
+  const tradeBlockReasons = useMemo(() => {
+    const reasons: string[] = [];
+    if (!marketOpen) reasons.push("Market is closed.");
+    if (!entryWindowOpen) reasons.push(entryWindowMessage);
+    if (!q?.optionStrike || !q.optionPremium || !q.optionTargets) {
+      reasons.push("No actionable option signal available yet.");
+    }
+    if (q?.optionSide === "BALANCED") {
+      reasons.push("Signal is balanced. Wait for directional confirmation.");
+    }
+    if (openTrades.length >= MAX_OPEN_TRADES) {
+      reasons.push(`Max ${MAX_OPEN_TRADES} open trades reached.`);
+    }
+    if (openTradesInSegment >= MAX_OPEN_TRADES_PER_SEGMENT) {
+      reasons.push(`Only ${MAX_OPEN_TRADES_PER_SEGMENT} open trade allowed per segment.`);
+    }
+    if (todayTradeCount >= MAX_DAILY_TRADES) {
+      reasons.push(`Daily trade cap reached (${todayTradeCount}/${MAX_DAILY_TRADES}).`);
+    }
+    if (todayRealizedPnl <= DAILY_LOSS_LIMIT) {
+      reasons.push(`Daily loss limit reached (${Math.round(todayRealizedPnl)}).`);
+    }
+    if (todayLossCount >= MAX_DAILY_LOSS_TRADES) {
+      reasons.push(`Daily loss-trade cap reached (${todayLossCount}/${MAX_DAILY_LOSS_TRADES}).`);
+    }
+    if (todayConsecutiveLosses >= MAX_DAILY_CONSECUTIVE_LOSSES) {
+      reasons.push(
+        `Consecutive loss cap reached (${todayConsecutiveLosses}/${MAX_DAILY_CONSECUTIVE_LOSSES}).`
+      );
+    }
+    if (cooldownRemainingMs > 0) {
+      reasons.push(`Cooldown after loss active (${Math.ceil(cooldownRemainingMs / 60000)}m left).`);
+    }
+    if ((q?.confidence ?? 0) < MIN_SIGNAL_CONFIDENCE) {
+      reasons.push(`Confidence ${q?.confidence ?? 0}% below ${MIN_SIGNAL_CONFIDENCE}% threshold.`);
+    }
+    if ((q?.signalStrengthScore ?? 0) < MIN_SIGNAL_STRENGTH) {
+      reasons.push(
+        `Signal strength ${q?.signalStrengthScore ?? 0}/${q?.signalStrengthMax ?? 0} below threshold.`
+      );
+    }
+    if (q?.isChoppy) reasons.push("Choppy regime detected; entry blocked.");
+    if (q?.signalExpired) reasons.push("Signal expired; waiting for fresh confirmation.");
+    if (q?.alternateBlocked) reasons.push(q.alternateReason ?? "Alternate signal rule blocked entry.");
+    if (q && available < (q.optionPremium ?? 0) * activeSegmentConfig.lotSize) {
+      reasons.push("Insufficient capital for minimum lot.");
+    }
+    return reasons;
+  }, [
+    marketOpen,
+    entryWindowOpen,
+    entryWindowMessage,
+    q,
+    openTrades.length,
+    openTradesInSegment,
+    todayTradeCount,
+    todayRealizedPnl,
+    todayLossCount,
+    todayConsecutiveLosses,
+    cooldownRemainingMs,
+    available,
+    activeSegmentConfig.lotSize,
+  ]);
+  const canExecuteTrade = tradeBlockReasons.length === 0;
 
   function executeTrade() {
-    if (!marketOpen) return;
-    if (!q?.optionStrike || !q.optionPremium || !q.optionTargets) return;
-    if (q.optionSide === "BALANCED") return;
-    const seg = getSegment(activeSegment);
+    if (!canExecuteTrade || !q?.optionStrike || !q.optionPremium || !q.optionTargets) {
+      if (tradeBlockReasons.length > 0) {
+        addLog(`ENTRY BLOCKED: ${tradeBlockReasons[0]}`);
+      }
+      return;
+    }
+    const seg = activeSegmentConfig;
     const premium = q.optionPremium;
     const lotSize = seg.lotSize;
     const maxQty = Math.floor(available / (premium * lotSize));
@@ -214,17 +455,29 @@ export default function PaperTradePage() {
       t2Premium: q.optionTargets.premiumT2, t3Premium: q.optionTargets.premiumT3,
       trailSLPremium: q.optionTargets.premiumTrailSL, activeSL: q.optionTargets.premiumSL,
       status: "OPEN", t1Reached: false, t2Reached: false,
-      pnl: 0, createdAt: new Date().toISOString(),
+      pnl: computeNetPnl(premium, premium, qty, lotSize), createdAt: new Date().toISOString(),
     };
     const next = [trade, ...trades];
     setTrades(next); saveTrades(next);
     addLog(`OPENED: ${seg.label} ${q.optionStrike} ${q.optionSide} @ ₹${premium}`);
+    if (q.bias === "BULLISH" || q.bias === "BEARISH") {
+      void fetch("/api/signals/ack", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ symbol: activeSegment, bias: q.bias }),
+      }).catch(() => {});
+    }
   }
 
   function manualClose(id: string) {
     const updated = trades.map((t) => {
       if (t.id !== id) return t;
-      const pnl = (t.currentPremium - t.entryPremium) * t.qty * t.lotSize;
+      const pnl = computeNetPnl(
+        t.entryPremium,
+        t.currentPremium,
+        t.qty,
+        t.lotSize
+      );
       return { ...t, status: "CLOSED" as const, pnl, exitPremium: t.currentPremium, closedAt: new Date().toISOString(), exitReason: "Manual close" };
     });
     setTrades(updated); saveTrades(updated);
@@ -318,7 +571,7 @@ export default function PaperTradePage() {
                         </div>
                         <div className="rounded-lg bg-zinc-800/50 p-3">
                           <p className="text-[10px] text-zinc-500 uppercase">Lot Size</p>
-                          <p className="text-lg font-bold">{getSegment(activeSegment).lotSize}</p>
+                          <p className="text-lg font-bold">{activeSegmentConfig.lotSize}</p>
                         </div>
                         <div className="rounded-lg bg-zinc-800/50 p-3">
                           <p className="text-[10px] text-zinc-500 uppercase mb-1">Lots</p>
@@ -354,7 +607,7 @@ export default function PaperTradePage() {
                       <div className="flex items-center gap-3">
                         <Button
                           onClick={executeTrade}
-                          disabled={available < (q.optionPremium ?? 0) * getSegment(activeSegment).lotSize}
+                          disabled={!canExecuteTrade}
                           size="lg"
                           className="font-semibold"
                         >
@@ -365,6 +618,15 @@ export default function PaperTradePage() {
                           Auto SL/T1/T2/T3/Trail on every refresh (30s)
                         </div>
                       </div>
+                      <p className="text-[11px] text-zinc-500">
+                        Net P&L includes slippage (0.15% per side) + estimated brokerage/statutory charges.
+                      </p>
+                      {tradeBlockReasons.length > 0 && (
+                        <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 p-3">
+                          <p className="text-xs font-semibold text-amber-300">Entry blocked</p>
+                          <p className="text-xs text-zinc-400 mt-0.5">{tradeBlockReasons[0]}</p>
+                        </div>
+                      )}
                     </div>
                   ) : (
                     <div className="flex items-center gap-2 py-4 text-zinc-500">
@@ -409,7 +671,13 @@ export default function PaperTradePage() {
                       </TableHeader>
                       <TableBody>
                         {openTrades.map((t) => {
-                          const pnlPct = t.invested > 0 ? ((t.pnl / t.invested) * 100).toFixed(1) : "0";
+                          const displayPnl = computeNetPnl(
+                            t.entryPremium,
+                            t.currentPremium,
+                            t.qty,
+                            t.lotSize
+                          );
+                          const pnlPct = t.invested > 0 ? ((displayPnl / t.invested) * 100).toFixed(1) : "0";
                           return (
                             <TableRow key={t.id}>
                               <TableCell>
@@ -443,8 +711,8 @@ export default function PaperTradePage() {
                               </TableCell>
                               <TableCell className="text-sm">{t.qty}×{t.lotSize}</TableCell>
                               <TableCell>
-                                <span className={`font-bold tabular-nums ${t.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                                  {t.pnl >= 0 ? "+" : ""}₹{Math.round(t.pnl).toLocaleString()}
+                                <span className={`font-bold tabular-nums ${displayPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                  {displayPnl >= 0 ? "+" : ""}₹{Math.round(displayPnl).toLocaleString()}
                                 </span>
                                 <span className="text-xs text-zinc-500 block">({pnlPct}%)</span>
                               </TableCell>
@@ -516,32 +784,41 @@ export default function PaperTradePage() {
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {closedTrades.map((t) => (
-                          <TableRow key={t.id}>
-                            <TableCell className="font-medium">
-                              {t.segmentLabel} {t.strike} {t.side}
-                            </TableCell>
-                            <TableCell className="tabular-nums">₹{t.entryPremium}</TableCell>
-                            <TableCell className="tabular-nums">₹{t.exitPremium ?? t.currentPremium}</TableCell>
-                            <TableCell className="tabular-nums">₹{t.invested.toLocaleString()}</TableCell>
-                            <TableCell>
-                              <span className={`font-bold tabular-nums ${t.pnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
-                                {t.pnl >= 0 ? "+" : ""}₹{Math.round(t.pnl).toLocaleString()}
-                              </span>
-                            </TableCell>
-                            <TableCell>
-                              <Badge variant={
-                                t.status === "SL_HIT" || t.status === "TRAIL_SL" ? "destructive" :
-                                t.status.startsWith("T") ? "default" : "secondary"
-                              }>
-                                {t.exitReason ?? t.status.replace(/_/g, " ")}
-                              </Badge>
-                            </TableCell>
-                            <TableCell className="text-xs text-zinc-500">
-                              {new Date(t.closedAt ?? t.createdAt).toLocaleTimeString()}
-                            </TableCell>
-                          </TableRow>
-                        ))}
+                        {closedTrades.map((t) => {
+                          const exitPremium = t.exitPremium ?? t.currentPremium;
+                          const displayPnl = computeNetPnl(
+                            t.entryPremium,
+                            exitPremium,
+                            t.qty,
+                            t.lotSize
+                          );
+                          return (
+                            <TableRow key={t.id}>
+                              <TableCell className="font-medium">
+                                {t.segmentLabel} {t.strike} {t.side}
+                              </TableCell>
+                              <TableCell className="tabular-nums">₹{t.entryPremium}</TableCell>
+                              <TableCell className="tabular-nums">₹{t.exitPremium ?? t.currentPremium}</TableCell>
+                              <TableCell className="tabular-nums">₹{t.invested.toLocaleString()}</TableCell>
+                              <TableCell>
+                                <span className={`font-bold tabular-nums ${displayPnl >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                                  {displayPnl >= 0 ? "+" : ""}₹{Math.round(displayPnl).toLocaleString()}
+                                </span>
+                              </TableCell>
+                              <TableCell>
+                                <Badge variant={
+                                  t.status === "SL_HIT" || t.status === "TRAIL_SL" ? "destructive" :
+                                  t.status.startsWith("T") ? "default" : "secondary"
+                                }>
+                                  {t.exitReason ?? t.status.replace(/_/g, " ")}
+                                </Badge>
+                              </TableCell>
+                              <TableCell className="text-xs text-zinc-500">
+                                {new Date(t.closedAt ?? t.createdAt).toLocaleTimeString()}
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })}
                       </TableBody>
                     </Table>
                   </div>
@@ -563,16 +840,30 @@ export default function PaperTradePage() {
 // ─── Analytics ──────────────────────────────────────
 
 function AnalyticsDashboard({ trades }: { trades: PaperTrade[] }) {
-  const closed = trades.filter((t) => t.status !== "OPEN");
-  const open = trades.filter((t) => t.status === "OPEN");
-  const totalPnl = closed.reduce((s, t) => s + t.pnl, 0) + open.reduce((s, t) => s + t.pnl, 0);
-  const wins = closed.filter((t) => t.pnl > 0);
-  const losses = closed.filter((t) => t.pnl <= 0);
+  const tradesWithNetPnl = useMemo(
+    () =>
+      trades.map((t) => {
+        const exitPremium =
+          t.status === "OPEN"
+            ? t.currentPremium
+            : t.exitPremium ?? t.currentPremium ?? t.entryPremium;
+        return {
+          ...t,
+          netPnl: computeNetPnl(t.entryPremium, exitPremium, t.qty, t.lotSize),
+        };
+      }),
+    [trades]
+  );
+  const closed = tradesWithNetPnl.filter((t) => t.status !== "OPEN");
+  const open = tradesWithNetPnl.filter((t) => t.status === "OPEN");
+  const totalPnl = closed.reduce((s, t) => s + t.netPnl, 0) + open.reduce((s, t) => s + t.netPnl, 0);
+  const wins = closed.filter((t) => t.netPnl > 0);
+  const losses = closed.filter((t) => t.netPnl <= 0);
   const winRate = closed.length > 0 ? Math.round((wins.length / closed.length) * 100) : 0;
-  const avgWin = wins.length > 0 ? Math.round(wins.reduce((s, t) => s + t.pnl, 0) / wins.length) : 0;
-  const avgLoss = losses.length > 0 ? Math.round(losses.reduce((s, t) => s + t.pnl, 0) / losses.length) : 0;
-  const maxWin = wins.length > 0 ? Math.max(...wins.map((t) => t.pnl)) : 0;
-  const maxLoss = losses.length > 0 ? Math.min(...losses.map((t) => t.pnl)) : 0;
+  const avgWin = wins.length > 0 ? Math.round(wins.reduce((s, t) => s + t.netPnl, 0) / wins.length) : 0;
+  const avgLoss = losses.length > 0 ? Math.round(losses.reduce((s, t) => s + t.netPnl, 0) / losses.length) : 0;
+  const maxWin = wins.length > 0 ? Math.max(...wins.map((t) => t.netPnl)) : 0;
+  const maxLoss = losses.length > 0 ? Math.min(...losses.map((t) => t.netPnl)) : 0;
   const profitFactor = Math.abs(avgLoss) > 0 ? Math.abs(avgWin / avgLoss) : avgWin > 0 ? Infinity : 0;
   const returnPct = ((totalPnl / DEFAULT_CAPITAL) * 100).toFixed(1);
 
@@ -580,7 +871,7 @@ function AnalyticsDashboard({ trades }: { trades: PaperTrade[] }) {
     const map = new Map<string, number>();
     for (const t of closed) {
       const d = new Date(t.closedAt ?? t.createdAt).toLocaleDateString();
-      map.set(d, (map.get(d) ?? 0) + t.pnl);
+      map.set(d, (map.get(d) ?? 0) + t.netPnl);
     }
     let cumulative = 0;
     return Array.from(map.entries()).map(([date, pnl]) => {
@@ -593,7 +884,11 @@ function AnalyticsDashboard({ trades }: { trades: PaperTrade[] }) {
     const map = new Map<string, { count: number; pnl: number; wins: number }>();
     for (const t of closed) {
       const prev = map.get(t.segmentLabel) ?? { count: 0, pnl: 0, wins: 0 };
-      map.set(t.segmentLabel, { count: prev.count + 1, pnl: prev.pnl + t.pnl, wins: prev.wins + (t.pnl > 0 ? 1 : 0) });
+      map.set(t.segmentLabel, {
+        count: prev.count + 1,
+        pnl: prev.pnl + t.netPnl,
+        wins: prev.wins + (t.netPnl > 0 ? 1 : 0),
+      });
     }
     return Array.from(map.entries()).map(([seg, v]) => ({ seg, ...v, winRate: v.count > 0 ? Math.round((v.wins / v.count) * 100) : 0 }));
   }, [closed]);
@@ -619,7 +914,12 @@ function AnalyticsDashboard({ trades }: { trades: PaperTrade[] }) {
           { label: "Total P&L", value: `${totalPnl >= 0 ? "+" : ""}₹${Math.abs(Math.round(totalPnl)).toLocaleString()}`, sub: `${returnPct}% return`, trend: totalPnl >= 0 ? "up" as const : "down" as const },
           { label: "Win Rate", value: `${winRate}%`, sub: `${wins.length}W / ${losses.length}L`, trend: "neutral" as const },
           { label: "Profit Factor", value: profitFactor === Infinity ? "∞" : profitFactor.toFixed(2), sub: "Avg Win / Avg Loss", trend: "neutral" as const },
-          { label: "Open P&L", value: `${open.reduce((s, t) => s + t.pnl, 0) >= 0 ? "+" : ""}₹${Math.abs(Math.round(open.reduce((s, t) => s + t.pnl, 0))).toLocaleString()}`, sub: `${open.length} positions`, trend: open.reduce((s, t) => s + t.pnl, 0) >= 0 ? "up" as const : "down" as const },
+          {
+            label: "Open P&L",
+            value: `${open.reduce((s, t) => s + t.netPnl, 0) >= 0 ? "+" : ""}₹${Math.abs(Math.round(open.reduce((s, t) => s + t.netPnl, 0))).toLocaleString()}`,
+            sub: `${open.length} positions`,
+            trend: open.reduce((s, t) => s + t.netPnl, 0) >= 0 ? "up" as const : "down" as const,
+          },
         ].map((k) => (
           <StatCard key={k.label} label={k.label} value={k.value} subValue={k.sub} trend={k.trend} />
         ))}
@@ -736,14 +1036,32 @@ function AnalyticsDashboard({ trades }: { trades: PaperTrade[] }) {
   );
 }
 
-function maxConsecutive(trades: PaperTrade[], isWin: boolean): number {
+function maxConsecutive(
+  trades: Array<{ netPnl: number }>,
+  isWin: boolean
+): number {
   let max = 0, cur = 0;
-  for (const t of trades) { if ((isWin && t.pnl > 0) || (!isWin && t.pnl <= 0)) { cur++; max = Math.max(max, cur); } else cur = 0; }
+  for (const t of trades) {
+    if ((isWin && t.netPnl > 0) || (!isWin && t.netPnl <= 0)) {
+      cur++;
+      max = Math.max(max, cur);
+    } else cur = 0;
+  }
   return max;
 }
-function largestStreakPnl(trades: PaperTrade[], isWin: boolean): number {
+function largestStreakPnl(
+  trades: Array<{ netPnl: number }>,
+  isWin: boolean
+): number {
   let maxPnl = 0, curPnl = 0;
-  for (const t of trades) { if ((isWin && t.pnl > 0) || (!isWin && t.pnl <= 0)) { curPnl += t.pnl; } else { if (isWin ? curPnl > maxPnl : curPnl < maxPnl) maxPnl = curPnl; curPnl = 0; } }
+  for (const t of trades) {
+    if ((isWin && t.netPnl > 0) || (!isWin && t.netPnl <= 0)) {
+      curPnl += t.netPnl;
+    } else {
+      if (isWin ? curPnl > maxPnl : curPnl < maxPnl) maxPnl = curPnl;
+      curPnl = 0;
+    }
+  }
   if (isWin ? curPnl > maxPnl : curPnl < maxPnl) maxPnl = curPnl;
   return maxPnl;
 }

@@ -8,10 +8,12 @@ import {
   computeMultiFactorBias,
   pickBestITMStrike,
   computeAdvancedFilters,
+  computeCprContext,
+  computeSRLevels,
   computeTechnicalIndicators,
-  recordSignalDirection,
   type StrategySignal,
   type GreekStrikeData,
+  type OrbContext,
   type CandleData,
   type AdvancedFilters,
   type TechnicalIndicators,
@@ -25,6 +27,7 @@ import {
   angelOneGetOIBuildup,
   angelOneSearchScrip,
   type AngelOneOptionGreekRow,
+  type AngelOneCandleRow,
 } from "@/lib/angel-one";
 import { getExpiryCandidates, buildOptionSymbol } from "@/lib/expiry-utils";
 import { getSegment, SEGMENTS, type SegmentId } from "@/lib/segments";
@@ -86,6 +89,66 @@ async function withTimeout<T>(
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
   }
+}
+
+function getIstDateKeyAndMinutes(timestamp: string): {
+  dateKey: string;
+  minutes: number;
+} | null {
+  const parsed = new Date(timestamp);
+  if (Number.isNaN(parsed.getTime())) return null;
+  const istMs = parsed.getTime() + 330 * 60 * 1000;
+  const ist = new Date(istMs);
+  const yyyy = ist.getUTCFullYear();
+  const mm = String(ist.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(ist.getUTCDate()).padStart(2, "0");
+  const minutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  return { dateKey: `${yyyy}-${mm}-${dd}`, minutes };
+}
+
+function computeOrbContextFromIntraday(
+  intradayCandles: AngelOneCandleRow[],
+  underlyingValue: number,
+  breakoutBufferPct: number
+): OrbContext | null {
+  if (intradayCandles.length < 3) return null;
+
+  let latestDateKey = "";
+  const keyed = intradayCandles
+    .map((row) => {
+      const meta = getIstDateKeyAndMinutes(row[0]);
+      if (!meta) return null;
+      if (!latestDateKey || meta.dateKey > latestDateKey) latestDateKey = meta.dateKey;
+      return { row, ...meta };
+    })
+    .filter(
+      (x): x is { row: AngelOneCandleRow; dateKey: string; minutes: number } =>
+        x !== null
+    );
+
+  if (!latestDateKey || keyed.length === 0) return null;
+
+  // First 15 minutes: 09:15 to 09:29 (3 bars in 5-min timeframe)
+  const orbRows = keyed
+    .filter((x) => x.dateKey === latestDateKey && x.minutes >= 555 && x.minutes < 570)
+    .map((x) => x.row);
+
+  if (orbRows.length < 2) return null;
+
+  const high = Math.max(...orbRows.map((r) => r[2]));
+  const low = Math.min(...orbRows.map((r) => r[3]));
+  const buffer = Math.max(1, underlyingValue * Math.max(0, breakoutBufferPct));
+
+  let breakout: OrbContext["breakout"] = "INSIDE_ORB";
+  if (underlyingValue > high + buffer) breakout = "ABOVE_ORB";
+  else if (underlyingValue < low - buffer) breakout = "BELOW_ORB";
+
+  return {
+    high: parseFloat(high.toFixed(2)),
+    low: parseFloat(low.toFixed(2)),
+    breakout,
+    isBreakout: breakout !== "INSIDE_ORB",
+  };
 }
 
 async function getNseCookies(): Promise<string> {
@@ -156,7 +219,10 @@ async function getSignalsFromNSE(nseSymbol: string) {
     pcr,
     maxPainStrike,
     underlyingValue,
-    { strikeStep }
+    {
+      strikeStep,
+      strategyProfile: segment?.strategy,
+    }
   );
 
   const oiBuildup = computeOIBuildup(data, underlyingValue);
@@ -515,10 +581,19 @@ async function getSignalsFromAngelOne(
   const maxPainStrike = greeksMaxPain.length > 0
     ? greeksMaxPain[0].strike
     : Math.round(underlyingValue / step) * step;
+  const cprContext =
+    pdh && pdl && pdc
+      ? computeCprContext(
+          computeSRLevels(pdh, pdl, pdc),
+          underlyingValue,
+          segment.strategy
+        )
+      : null;
 
   // 5b. Fetch intraday candles (5-min) for real technical indicators + advanced filters
   let advancedFilters: AdvancedFilters | null = null;
   let technicalIndicators: TechnicalIndicators | null = null;
+  let orbContext: OrbContext | null = null;
   try {
     const now = new Date();
     const fmtDT = (d: Date) =>
@@ -548,9 +623,23 @@ async function getSignalsFromAngelOne(
       const candleData: CandleData[] = intradayCandles.map((c) => ({
         open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
       }));
+      orbContext = computeOrbContextFromIntraday(
+        intradayCandles,
+        underlyingValue,
+        segment.strategy.orbBreakoutBufferPct
+      );
+      if (orbContext) {
+        console.log(
+          `[signals] ORB context: ${orbContext.breakout} (H:${orbContext.high} L:${orbContext.low})`
+        );
+      }
 
       // Real EMA, RSI, MACD, VWAP computed from candles
-      technicalIndicators = computeTechnicalIndicators(candleData);
+      technicalIndicators = computeTechnicalIndicators(
+        candleData,
+        segment.strategy.rsiBullishThreshold,
+        segment.strategy.rsiBearishThreshold
+      );
       if (technicalIndicators) {
         console.log(`[signals] Technical Indicators (${candleData.length} candles):`,
           `EMA:${technicalIndicators.emaTrend}(${technicalIndicators.emaFast.toFixed(1)}/${technicalIndicators.emaSlow.toFixed(1)})`,
@@ -559,7 +648,10 @@ async function getSignalsFromAngelOne(
           `VWAP:${technicalIndicators.vwapBias}`);
       }
 
-      advancedFilters = computeAdvancedFilters(candleData);
+      advancedFilters = computeAdvancedFilters(
+        candleData,
+        segment.strategy.choppinessThreshold
+      );
       console.log(`[signals] Advanced filters:`,
         `RF:${advancedFilters.rfConfirmsBull ? "Bull" : advancedFilters.rfConfirmsBear ? "Bear" : "Flat"}`,
         `RQK:${advancedFilters.rqkConfirmsBull ? "Bull" : advancedFilters.rqkConfirmsBear ? "Bear" : "Flat"}`,
@@ -593,7 +685,15 @@ async function getSignalsFromAngelOne(
       tradeVolume: parseFloat(String(g.tradeVolume ?? 0)) || 0,
     })).filter((g) => !isNaN(g.strike));
 
-    const preBias = computeMultiFactorBias(pcrItem.pcr, priceAction, technicalIndicators, advancedFilters);
+    const preBias = computeMultiFactorBias(
+      pcrItem.pcr,
+      priceAction,
+      technicalIndicators,
+      advancedFilters,
+      segment.strategy,
+      orbContext,
+      cprContext
+    );
     const isCallSide = preBias.bias === "BULLISH" || preBias.bias === "NEUTRAL";
 
     bestGreekStrike = pickBestITMStrike(greekStrikes, underlyingValue, isCallSide, step);
@@ -621,19 +721,16 @@ async function getSignalsFromAngelOne(
       bestGreekStrike,
       advancedFilters,
       technicalIndicators,
+      strategyProfile: segment.strategy,
+      orbContext,
+      cprContext,
       symbol,
     }
   );
 
-  // Record signal direction for Alternate Signal tracking
-  if (signal.bias !== "NEUTRAL") {
-    recordSignalDirection(symbol, signal.bias);
-  }
-
   // 6. Fetch REAL option premium via SearchScrip + Market Quote
   let realOptionPremium: number | undefined;
   let optionSymbolName = "";
-  let optionSymbolToken = "";
 
   if (signal.optionsAdvisor && matchedExpiry && signal.bias !== "NEUTRAL") {
     const advisor = signal.optionsAdvisor;
@@ -653,7 +750,6 @@ async function getSignalsFromAngelOne(
       if (scripResults.length > 0) {
         const scrip = scripResults[0];
         optionSymbolName = scrip.tradingsymbol;
-        optionSymbolToken = scrip.symboltoken;
         console.log(`[signals] Found option scrip: ${scrip.tradingsymbol} token=${scrip.symboltoken}`);
 
         // Get real LTP for this option
@@ -705,7 +801,6 @@ async function getSignalsFromAngelOne(
         if (partialResults.length > 0) {
           const scrip = partialResults[0];
           optionSymbolName = scrip.tradingsymbol;
-          optionSymbolToken = scrip.symboltoken;
 
           const optQuote = await withTimeout(
             angelOneGetMarketQuote(
@@ -842,7 +937,10 @@ async function resolveSignalsData(
   }
   const uv = yahooPrice ?? segment.fallbackLTP;
   const step = segment.strikeStep;
-  const demoSignal = generateSignalFromPCR(1.25, uv, uv, { strikeStep: step });
+  const demoSignal = generateSignalFromPCR(1.25, uv, uv, {
+    strikeStep: step,
+    strategyProfile: segment.strategy,
+  });
   demoSignal.summary =
     "Demo: Sample BULLISH signal (PCR 1.25). Live data: login at /login during market hours.";
   return {

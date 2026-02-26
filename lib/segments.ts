@@ -13,6 +13,19 @@ import type { ExpiryDay } from "@/lib/expiry-utils";
 
 export type SegmentId = "NIFTY" | "BANKNIFTY" | "SENSEX" | "MIDCPNIFTY";
 
+export interface SegmentStrategyConfig {
+  rsiBullishThreshold: number;
+  rsiBearishThreshold: number;
+  pcrBullishThreshold: number;
+  pcrBearishThreshold: number;
+  choppinessThreshold: number;
+  biasStrongThreshold: number;
+  biasModerateThreshold: number;
+  orbBreakoutBufferPct: number;
+  cprNarrowThresholdPct: number;
+  cprWideThresholdPct: number;
+}
+
 export interface SegmentConfig {
   id: SegmentId;
   label: string;
@@ -25,6 +38,7 @@ export interface SegmentConfig {
   lotSize: number;
   fallbackLTP: number;
   expiryDay: ExpiryDay;
+  strategy: SegmentStrategyConfig;
 }
 
 export const SEGMENTS: SegmentConfig[] = [
@@ -50,6 +64,18 @@ export const SEGMENTS: SegmentConfig[] = [
     lotSize: 65,
     fallbackLTP: 25500,
     expiryDay: 2, // Tuesday
+    strategy: {
+      rsiBullishThreshold: 52,
+      rsiBearishThreshold: 48,
+      pcrBullishThreshold: 1.2,
+      pcrBearishThreshold: 0.8,
+      choppinessThreshold: 61.8,
+      biasStrongThreshold: 6,
+      biasModerateThreshold: 3,
+      orbBreakoutBufferPct: 0.0005,
+      cprNarrowThresholdPct: 0.2,
+      cprWideThresholdPct: 0.6,
+    },
   },
   {
     id: "BANKNIFTY",
@@ -66,6 +92,18 @@ export const SEGMENTS: SegmentConfig[] = [
     lotSize: 30,
     fallbackLTP: 61000,
     expiryDay: 3, // Wednesday
+    strategy: {
+      rsiBullishThreshold: 51,
+      rsiBearishThreshold: 49,
+      pcrBullishThreshold: 1.15,
+      pcrBearishThreshold: 0.85,
+      choppinessThreshold: 64,
+      biasStrongThreshold: 6,
+      biasModerateThreshold: 3,
+      orbBreakoutBufferPct: 0.0008,
+      cprNarrowThresholdPct: 0.25,
+      cprWideThresholdPct: 0.75,
+    },
   },
   {
     id: "SENSEX",
@@ -79,6 +117,18 @@ export const SEGMENTS: SegmentConfig[] = [
     lotSize: 20,
     fallbackLTP: 82500,
     expiryDay: 5, // Friday
+    strategy: {
+      rsiBullishThreshold: 52,
+      rsiBearishThreshold: 48,
+      pcrBullishThreshold: 1.15,
+      pcrBearishThreshold: 0.85,
+      choppinessThreshold: 62.5,
+      biasStrongThreshold: 6,
+      biasModerateThreshold: 3,
+      orbBreakoutBufferPct: 0.0006,
+      cprNarrowThresholdPct: 0.22,
+      cprWideThresholdPct: 0.65,
+    },
   },
   {
     id: "MIDCPNIFTY",
@@ -95,6 +145,18 @@ export const SEGMENTS: SegmentConfig[] = [
     lotSize: 120,
     fallbackLTP: 12500,
     expiryDay: 1, // Monday
+    strategy: {
+      rsiBullishThreshold: 53,
+      rsiBearishThreshold: 47,
+      pcrBullishThreshold: 1.22,
+      pcrBearishThreshold: 0.78,
+      choppinessThreshold: 60.5,
+      biasStrongThreshold: 6,
+      biasModerateThreshold: 3,
+      orbBreakoutBufferPct: 0.0007,
+      cprNarrowThresholdPct: 0.2,
+      cprWideThresholdPct: 0.6,
+    },
   },
 ];
 
