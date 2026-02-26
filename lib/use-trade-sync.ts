@@ -4,7 +4,7 @@ import { useEffect, useRef, useCallback } from "react";
 
 interface SyncOptions<T> {
   trades: T[];
-  setTrades: (trades: T[]) => void;
+  setTrades: (trades: T[] | ((prev: T[]) => T[])) => void;
   saveTrades: (trades: T[]) => void;
 }
 
