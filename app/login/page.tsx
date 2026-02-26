@@ -71,7 +71,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen flex">
+    <div className="flex-1 flex">
       {/* Left Panel — Brand Hero */}
       <div className="hidden lg:flex lg:w-[55%] relative auth-gradient grid-pattern">
         <div className="gradient-animate absolute inset-0 opacity-60" />

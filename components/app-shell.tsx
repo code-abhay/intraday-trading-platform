@@ -7,7 +7,7 @@ import { Sidebar } from "@/components/sidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
-const NO_SHELL_PATHS = ["/auth", "/login", "/terms", "/privacy", "/disclaimer"];
+const NO_SHELL_PATHS = ["/auth", "/terms", "/privacy", "/disclaimer"];
 
 function Footer() {
   return (
