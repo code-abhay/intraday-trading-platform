@@ -3,6 +3,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { SEGMENTS, type SegmentId, getSegment } from "@/lib/segments";
 import { isMarketOpen, getMarketStatusMessage } from "@/lib/utils";
+import { useTradeSync } from "@/lib/use-trade-sync";
 import { AppHeader, SegmentSelector } from "@/components/app-header";
 import { StatCard } from "@/components/stat-card";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -77,6 +78,8 @@ export default function PaperTradePage() {
   const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
 
   useEffect(() => { setTrades(loadTrades()); setSettings(loadSettings()); }, []);
+
+  const { resetDb } = useTradeSync({ trades, setTrades, saveTrades });
 
   useEffect(() => {
     const check = () => setMarketOpen(isMarketOpen());
@@ -212,7 +215,7 @@ export default function PaperTradePage() {
     setTrades(updated); saveTrades(updated);
   }
 
-  function resetAll() { setTrades([]); saveTrades([]); setAutoExitLog([]); }
+  function resetAll() { setTrades([]); saveTrades([]); setAutoExitLog([]); resetDb(); }
   function toggleAutoExecute() { const next = { ...settings, autoExecute: !settings.autoExecute }; setSettings(next); saveSettings(next); }
 
   return (
