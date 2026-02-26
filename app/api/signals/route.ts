@@ -267,16 +267,17 @@ async function getSignalsFromAngelOne(
   }
   if (!underlyingValue) underlyingValue = segment.fallbackLTP;
 
-  // 3. Historical candle data for PDH/PDL/PDC and ATR
+  // 3. Historical candle data for PDH/PDL/PDC and ATR + ATR SMA for vol regime
   let pdh: number | undefined;
   let pdl: number | undefined;
   let pdc: number | undefined;
   let atr: number | undefined;
+  let atrSma: number | undefined;
 
   try {
     const now = new Date();
     const fromDate = new Date(now);
-    fromDate.setDate(fromDate.getDate() - 10);
+    fromDate.setDate(fromDate.getDate() - 25);
     const fmt = (d: Date) =>
       `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
     const fromStr = `${fmt(fromDate)} 09:15`;
@@ -298,8 +299,13 @@ async function getSignalsFromAngelOne(
       pdl = prior[3];
       pdc = prior[4];
 
-      const ranges = candles.slice(-5).map((c) => c[2] - c[3]);
-      atr = ranges.reduce((s, r) => s + r, 0) / ranges.length;
+      // ATR from last 5 days
+      const recentRanges = candles.slice(-5).map((c) => c[2] - c[3]);
+      atr = recentRanges.reduce((s, r) => s + r, 0) / recentRanges.length;
+
+      // ATR SMA from last 20 days for volatility regime
+      const allRanges = candles.slice(-20).map((c) => c[2] - c[3]);
+      atrSma = allRanges.reduce((s, r) => s + r, 0) / allRanges.length;
     }
   } catch (e) {
     console.warn("[signals] Candle data failed:", e);
@@ -310,6 +316,7 @@ async function getSignalsFromAngelOne(
     pdl = todayLow || underlyingValue;
     pdc = prevClose;
     atr = Math.abs(todayHigh - todayLow) || underlyingValue * 0.008;
+    atrSma = atr;
   }
 
   // 4. Option Greeks — full chain for OI table, delta, IV, and Max Pain
@@ -407,6 +414,18 @@ async function getSignalsFromAngelOne(
     ? greeksMaxPain[0].strike
     : Math.round(underlyingValue / step) * step;
 
+  // ATM CE IV from greeks for options advisor
+  let greekIV: number | undefined;
+  if (greeksData.length > 0) {
+    const atmStrike2 = Math.round(underlyingValue / step) * step;
+    const ceIVRow = greeksData.find(
+      (g) => g.optionType === "CE" && Math.abs(parseFloat(String(g.strikePrice)) - atmStrike2) < step
+    );
+    if (ceIVRow?.impliedVolatility) {
+      greekIV = parseFloat(String(ceIVRow.impliedVolatility));
+    }
+  }
+
   const signal = generateSignalFromPCR(
     pcrItem.pcr,
     underlyingValue,
@@ -417,7 +436,9 @@ async function getSignalsFromAngelOne(
       pdl,
       pdc,
       atr,
+      atrSma,
       greekDelta,
+      greekIV,
       priceAction,
       oiData,
     }
