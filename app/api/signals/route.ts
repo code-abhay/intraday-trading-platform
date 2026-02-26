@@ -6,8 +6,12 @@ import {
   generateSignal,
   generateSignalFromPCR,
   pickBestITMStrike,
+  computeAdvancedFilters,
+  recordSignalDirection,
   type StrategySignal,
   type GreekStrikeData,
+  type CandleData,
+  type AdvancedFilters,
 } from "@/lib/strategy";
 import type { OptionChainRow } from "@/app/api/option-chain/route";
 import {
@@ -422,6 +426,37 @@ async function getSignalsFromAngelOne(
     ? greeksMaxPain[0].strike
     : Math.round(underlyingValue / step) * step;
 
+  // 5b. Fetch intraday candles (5-min) for advanced filters (Range Filter, RQK, Choppiness)
+  let advancedFilters: AdvancedFilters | null = null;
+  try {
+    const now = new Date();
+    const fmtDT = (d: Date) =>
+      `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
+
+    const todayFrom = `${fmtDT(now)} 09:15`;
+    const todayTo = `${fmtDT(now)} 15:30`;
+
+    const intradayCandles = await angelOneGetCandleData(
+      jwtToken, apiKey, segment.exchange, segment.angelToken,
+      "FIVE_MINUTE", todayFrom, todayTo,
+    );
+
+    if (intradayCandles.length >= 10) {
+      const candleData: CandleData[] = intradayCandles.map((c) => ({
+        open: c[1], high: c[2], low: c[3], close: c[4], volume: c[5],
+      }));
+      advancedFilters = computeAdvancedFilters(candleData);
+      console.log(`[signals] Advanced filters computed from ${candleData.length} intraday candles:`,
+        `RF:${advancedFilters.rfConfirmsBull ? "Bull" : advancedFilters.rfConfirmsBear ? "Bear" : "Flat"}`,
+        `RQK:${advancedFilters.rqkConfirmsBull ? "Bull" : advancedFilters.rqkConfirmsBear ? "Bear" : "Flat"}`,
+        `CHOP:${advancedFilters.choppiness}${advancedFilters.isChoppy ? "(choppy)" : "(trending)"}`);
+    } else {
+      console.warn(`[signals] Only ${intradayCandles.length} intraday candles — skipping advanced filters`);
+    }
+  } catch (e) {
+    console.warn("[signals] Intraday candle fetch for advanced filters failed:", e);
+  }
+
   // ATM CE IV from greeks for options advisor
   let greekIV: number | undefined;
   let bestGreekStrike: GreekStrikeData | null = null;
@@ -472,8 +507,15 @@ async function getSignalsFromAngelOne(
       oiData,
       expiryDay: segment.expiryDay,
       bestGreekStrike,
+      advancedFilters,
+      symbol,
     }
   );
+
+  // Record signal direction for Alternate Signal tracking
+  if (signal.bias !== "NEUTRAL") {
+    recordSignalDirection(symbol, signal.bias);
+  }
 
   // 6. Fetch REAL option premium via SearchScrip + Market Quote
   let realOptionPremium: number | undefined;

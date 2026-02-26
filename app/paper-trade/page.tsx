@@ -16,6 +16,7 @@ interface PaperTrade {
   side: "CALL" | "PUT";
   expiry: string;
   entryPremium: number;
+  entryUnderlying: number;
   currentPremium: number;
   qty: number;
   lotSize: number;
@@ -24,7 +25,7 @@ interface PaperTrade {
   t2Premium: number;
   t3Premium: number;
   trailSLPremium: number;
-  activeSL: number; // current active SL (moves up after T1)
+  activeSL: number;
   invested: number;
   status: "OPEN" | "T1_HIT" | "T2_HIT" | "T3_HIT" | "SL_HIT" | "TRAIL_SL" | "CLOSED";
   t1Reached: boolean;
@@ -163,16 +164,16 @@ export default function PaperTradePage() {
       setQuotes((prev) => ({ ...prev, [seg]: q }));
 
       setTrades((prev) => {
-        // Update premiums for open trades
         const updated = prev.map((t) => {
           if (t.status !== "OPEN" || t.segment !== seg) return t;
-          const premiumDelta = q.optionDelta ?? 0.5;
-          const priceMove = json.underlyingValue - t.strike;
-          const newPremium = Math.max(1, Math.round(t.entryPremium + priceMove * premiumDelta * (t.side === "CALL" ? 1 : -1)));
+          const delta = q.optionDelta ?? 0.5;
+          const entryUnd = t.entryUnderlying || t.strike;
+          const underlyingChange = json.underlyingValue - entryUnd;
+          const premiumChange = underlyingChange * delta * (t.side === "CALL" ? 1 : -1);
+          const newPremium = Math.max(1, Math.round(t.entryPremium + premiumChange));
           const pnl = (newPremium - t.entryPremium) * t.qty * t.lotSize;
           return { ...t, currentPremium: newPremium, pnl };
         });
-        // Run auto-exit engine
         return processAutoExits(updated);
       });
     } catch {}
@@ -206,12 +207,13 @@ export default function PaperTradePage() {
       id: `pt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       segment: activeSegment, segmentLabel: seg.label,
       strike: q.optionStrike, side: q.optionSide as "CALL" | "PUT",
-      expiry: q.expiry ?? "", entryPremium: premium, currentPremium: premium,
+      expiry: q.expiry ?? "", entryPremium: premium, entryUnderlying: q.ltp,
+      currentPremium: premium,
       qty, lotSize, invested,
       slPremium: q.optionTargets.premiumSL, t1Premium: q.optionTargets.premiumT1,
       t2Premium: q.optionTargets.premiumT2, t3Premium: q.optionTargets.premiumT3,
       trailSLPremium: q.optionTargets.premiumTrailSL,
-      activeSL: q.optionTargets.premiumSL, // initial SL
+      activeSL: q.optionTargets.premiumSL,
       status: "OPEN", t1Reached: false, t2Reached: false,
       pnl: 0, createdAt: new Date().toISOString(),
     };

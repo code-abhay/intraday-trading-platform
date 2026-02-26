@@ -89,6 +89,17 @@ interface PartialExitPlan {
   totalLots: number;
 }
 
+interface AdvancedFiltersUI {
+  rangeFilter: { filt: number; upward: boolean; downward: boolean };
+  rqk: { value: number; prevValue: number; uptrend: boolean; downtrend: boolean };
+  choppiness: number;
+  isChoppy: boolean;
+  rfConfirmsBull: boolean;
+  rfConfirmsBear: boolean;
+  rqkConfirmsBull: boolean;
+  rqkConfirmsBear: boolean;
+}
+
 interface Signal {
   bias: string;
   biasStrength?: string;
@@ -113,6 +124,10 @@ interface Signal {
   volatility?: VolatilityInfo;
   partialExits?: PartialExitPlan;
   tradeDirection?: string;
+  advancedFilters?: AdvancedFiltersUI;
+  signalExpired?: boolean;
+  alternateBlocked?: boolean;
+  alternateReason?: string;
 }
 
 interface OITableRow {
@@ -272,7 +287,7 @@ export default function Home() {
           </div>
 
           {/* Signal Strength + Volatility Row */}
-          {sig && (
+          {sig && (<>
             <div className="grid gap-4 sm:grid-cols-2">
               {/* Signal Strength */}
               {sig.signalStrength && (
@@ -358,7 +373,44 @@ export default function Home() {
                 </div>
               )}
             </div>
-          )}
+
+            {/* Advanced Filters (DIY) */}
+            {sig.advancedFilters && (
+              <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
+                <h2 className="text-sm font-semibold text-violet-400 mb-3">Advanced Filters (DIY)</h2>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <div className="text-xs text-zinc-500 mb-1">Range Filter</div>
+                    <div className={`text-sm font-bold ${sig.advancedFilters.rfConfirmsBull ? "text-emerald-400" : sig.advancedFilters.rfConfirmsBear ? "text-red-400" : "text-zinc-500"}`}>
+                      {sig.advancedFilters.rfConfirmsBull ? "▲ Bullish" : sig.advancedFilters.rfConfirmsBear ? "▼ Bearish" : "— Flat"}
+                    </div>
+                    <div className="text-xs text-zinc-600 mt-0.5">Filt: {sig.advancedFilters.rangeFilter.filt.toFixed(1)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-zinc-500 mb-1">RQK (Kernel)</div>
+                    <div className={`text-sm font-bold ${sig.advancedFilters.rqkConfirmsBull ? "text-emerald-400" : sig.advancedFilters.rqkConfirmsBear ? "text-red-400" : "text-zinc-500"}`}>
+                      {sig.advancedFilters.rqkConfirmsBull ? "▲ Uptrend" : sig.advancedFilters.rqkConfirmsBear ? "▼ Downtrend" : "— Flat"}
+                    </div>
+                    <div className="text-xs text-zinc-600 mt-0.5">Val: {sig.advancedFilters.rqk.value.toFixed(1)}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs text-zinc-500 mb-1">Choppiness</div>
+                    <div className={`text-sm font-bold ${sig.advancedFilters.isChoppy ? "text-amber-400" : "text-emerald-400"}`}>
+                      {sig.advancedFilters.choppiness}
+                    </div>
+                    <div className="text-xs text-zinc-600 mt-0.5">{sig.advancedFilters.isChoppy ? "Ranging/Choppy" : "Trending"}</div>
+                  </div>
+                </div>
+                <div className="h-2 rounded bg-zinc-800 mt-3 overflow-hidden">
+                  <div className={`h-full rounded ${sig.advancedFilters.choppiness > 61.8 ? "bg-amber-500/70" : "bg-emerald-500/70"}`}
+                    style={{ width: `${Math.min(100, sig.advancedFilters.choppiness)}%` }} />
+                </div>
+                <div className="flex justify-between text-xs text-zinc-600 mt-1"><span>Trending</span><span>61.8</span><span>Choppy</span></div>
+                {sig.signalExpired && <p className="text-xs text-amber-400 mt-2">Signal expired — filters did not confirm within 5 cycles</p>}
+                {sig.alternateBlocked && <p className="text-xs text-amber-400 mt-2">{sig.alternateReason}</p>}
+              </div>
+            )}
+          </>)}
 
           {/* Market Data */}
           {data?.marketData && (

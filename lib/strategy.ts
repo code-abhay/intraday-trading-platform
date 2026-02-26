@@ -137,6 +137,10 @@ export interface StrategySignal {
   volatility?: VolatilityInfo;
   partialExits?: PartialExitPlan;
   tradeDirection?: string;
+  advancedFilters?: AdvancedFilters;
+  signalExpired?: boolean;
+  alternateBlocked?: boolean;
+  alternateReason?: string;
 }
 
 // ---------- NSE Option Chain ----------
@@ -474,6 +478,212 @@ export function computeOptionsAdvisor(
   };
 }
 
+// ---------- Advanced Filters (ported from DIY Pine Script) ----------
+
+export interface CandleData {
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+}
+
+function emaArray(data: number[], period: number): number[] {
+  if (data.length === 0) return [];
+  const result: number[] = [data[0]];
+  const k = 2 / (period + 1);
+  for (let i = 1; i < data.length; i++) {
+    result.push(data[i] * k + result[i - 1] * (1 - k));
+  }
+  return result;
+}
+
+/**
+ * Range Filter — dual-pass smoothing from diy.pine (smoothrng + rngfilt).
+ * Removes noise from price; cross above/below filter line gives direction.
+ */
+export function computeRangeFilter(
+  closes: number[], period = 20, mult = 3.0,
+): { filt: number; upward: boolean; downward: boolean } {
+  if (closes.length < period * 3)
+    return { filt: closes[closes.length - 1] ?? 0, upward: false, downward: false };
+
+  const absChanges: number[] = [];
+  for (let i = 1; i < closes.length; i++) absChanges.push(Math.abs(closes[i] - closes[i - 1]));
+
+  const avgRng = emaArray(absChanges, period);
+  const wper = period * 2 - 1;
+  const smoothRng = emaArray(avgRng, wper).map((v) => v * mult);
+
+  const filtArr: number[] = [closes[0]];
+  for (let i = 0; i < closes.length - 1; i++) {
+    const x = closes[i + 1];
+    const r = smoothRng[Math.min(i, smoothRng.length - 1)] ?? 0;
+    const prev = filtArr[filtArr.length - 1];
+    if (x > prev) filtArr.push(x - r < prev ? prev : x - r);
+    else filtArr.push(x + r > prev ? prev : x + r);
+  }
+
+  const n = filtArr.length;
+  if (n < 3) return { filt: filtArr[n - 1] ?? 0, upward: false, downward: false };
+
+  const filt = filtArr[n - 1];
+  const prevFilt = filtArr[n - 2];
+  return { filt, upward: filt > prevFilt, downward: filt < prevFilt };
+}
+
+/**
+ * Rational Quadratic Kernel (RQK) — Nadaraya-Watson estimator from diy.pine.
+ * ML-inspired regression with minimal lag; detects trend with weighted past data.
+ */
+export function computeRQK(
+  closes: number[], lookback = 8, relWeight = 8, startBar = 25,
+): { value: number; prevValue: number; uptrend: boolean; downtrend: boolean } {
+  const n = closes.length;
+  if (n < 3) return { value: closes[n - 1] ?? 0, prevValue: closes[n - 2] ?? closes[0] ?? 0, uptrend: false, downtrend: false };
+
+  function kernelReg(src: number[], len: number, h2: number): number {
+    let curW = 0, cumW = 0;
+    const maxI = Math.min(len, len + startBar);
+    for (let i = 0; i < maxI; i++) {
+      const idx = len - 1 - i;
+      if (idx < 0) break;
+      const w = Math.pow(1 + (i * i) / (h2 * h2 * 2 * relWeight), -relWeight);
+      curW += src[idx] * w;
+      cumW += w;
+    }
+    return cumW > 0 ? curW / cumW : src[len - 1];
+  }
+
+  const value = kernelReg(closes, n, lookback);
+  const prevValue = kernelReg(closes, n - 1, lookback);
+
+  return { value, prevValue, uptrend: value > prevValue, downtrend: value < prevValue };
+}
+
+/**
+ * Choppiness Index — measures whether market is trending (low) or ranging/choppy (high).
+ * CI = 100 * LOG10( SUM(ATR(1), period) / (HH - LL) ) / LOG10(period)
+ * Above 61.8 = choppy, below = trending.
+ */
+export function computeChoppiness(
+  highs: number[], lows: number[], closes: number[], period = 14,
+): number {
+  const n = closes.length;
+  if (n < period + 1) return 50;
+
+  let atrSum = 0;
+  for (let i = n - period; i < n; i++) {
+    const tr = Math.max(
+      highs[i] - lows[i],
+      Math.abs(highs[i] - (closes[i - 1] ?? closes[i])),
+      Math.abs(lows[i] - (closes[i - 1] ?? closes[i])),
+    );
+    atrSum += tr;
+  }
+
+  let hh = -Infinity, ll = Infinity;
+  for (let i = n - period; i < n; i++) {
+    if (highs[i] > hh) hh = highs[i];
+    if (lows[i] < ll) ll = lows[i];
+  }
+
+  const range = hh - ll;
+  if (range <= 0) return 50;
+  return 100 * Math.log10(atrSum / range) / Math.log10(period);
+}
+
+export interface AdvancedFilters {
+  rangeFilter: { filt: number; upward: boolean; downward: boolean };
+  rqk: { value: number; prevValue: number; uptrend: boolean; downtrend: boolean };
+  choppiness: number;
+  isChoppy: boolean;
+  rfConfirmsBull: boolean;
+  rfConfirmsBear: boolean;
+  rqkConfirmsBull: boolean;
+  rqkConfirmsBear: boolean;
+}
+
+export function computeAdvancedFilters(candles: CandleData[]): AdvancedFilters {
+  const closes = candles.map((c) => c.close);
+  const highs = candles.map((c) => c.high);
+  const lows = candles.map((c) => c.low);
+
+  const rf = computeRangeFilter(closes, 20, 3.0);
+  const rqk = computeRQK(closes, 8, 8, 25);
+  const chop = computeChoppiness(highs, lows, closes, 14);
+
+  return {
+    rangeFilter: rf,
+    rqk,
+    choppiness: parseFloat(chop.toFixed(1)),
+    isChoppy: chop > 61.8,
+    rfConfirmsBull: rf.upward,
+    rfConfirmsBear: rf.downward,
+    rqkConfirmsBull: rqk.uptrend,
+    rqkConfirmsBear: rqk.downtrend,
+  };
+}
+
+/**
+ * Signal Expiry — if the same directional bias persists for more than N cycles
+ * without fresh confirmation from advanced filters, expire to NEUTRAL.
+ */
+export interface SignalStateEntry {
+  lastBias: string;
+  cycleCount: number;
+  lastConfirmedAt: number;
+}
+
+const SIGNAL_EXPIRY_CYCLES = 5;
+
+const signalStateCache = new Map<string, SignalStateEntry>();
+
+export function applySignalExpiry(
+  symbol: string, bias: string, filtersConfirm: boolean,
+): { expired: boolean; cycleCount: number } {
+  const now = Date.now();
+  const state = signalStateCache.get(symbol);
+
+  if (!state || bias !== state.lastBias) {
+    signalStateCache.set(symbol, { lastBias: bias, cycleCount: 0, lastConfirmedAt: now });
+    return { expired: false, cycleCount: 0 };
+  }
+
+  if (filtersConfirm) {
+    state.lastConfirmedAt = now;
+    state.cycleCount = 0;
+    return { expired: false, cycleCount: 0 };
+  }
+
+  state.cycleCount++;
+  if (state.cycleCount > SIGNAL_EXPIRY_CYCLES) {
+    return { expired: true, cycleCount: state.cycleCount };
+  }
+  return { expired: false, cycleCount: state.cycleCount };
+}
+
+/**
+ * Alternate Signal — prevents consecutive signals in the same direction.
+ * After BULLISH is acted upon, next must be BEARISH before another BULLISH.
+ */
+const lastActedDirection = new Map<string, string>();
+
+export function applyAlternateSignal(
+  symbol: string, bias: string,
+): { blocked: boolean; reason?: string } {
+  if (bias === "NEUTRAL") return { blocked: false };
+  const last = lastActedDirection.get(symbol);
+  if (last && last === bias) {
+    return { blocked: true, reason: `Blocked: consecutive ${bias} — waiting for opposite signal` };
+  }
+  return { blocked: false };
+}
+
+export function recordSignalDirection(symbol: string, bias: string) {
+  if (bias !== "NEUTRAL") lastActedDirection.set(symbol, bias);
+}
+
 // ---------- S/R Levels ----------
 
 export function computeSRLevels(pdh: number, pdl: number, pdc: number): SRLevels {
@@ -495,6 +705,8 @@ export interface GenerateSignalOpts {
   oiData?: { longCount: number; shortCount: number };
   expiryDay?: ExpiryDay;
   bestGreekStrike?: GreekStrikeData | null;
+  advancedFilters?: AdvancedFilters | null;
+  symbol?: string;
 }
 
 export function generateSignalFromPCR(
@@ -507,11 +719,63 @@ export function generateSignalFromPCR(
   const pdc = opts?.pdc ?? underlyingValue;
   const strikeStep = opts?.strikeStep ?? 50;
 
-  const { bias, strength, confidence } = computeMultiFactorBias(pcrValue, opts?.priceAction);
+  let { bias, strength, confidence } = computeMultiFactorBias(pcrValue, opts?.priceAction);
   const pcr: PCRResult = { value: pcrValue, bias: pcrValue > 1.05 ? "BULLISH" : pcrValue < 0.95 ? "BEARISH" : "NEUTRAL", callOI: 0, putOI: 0 };
   const atrSma = opts?.atrSma ?? atr;
   const volInfo = computeVolatility(atr, atrSma);
   const signalStrength = computeSignalStrength(pcrValue, opts?.priceAction, volInfo.regime, opts?.oiData?.longCount, opts?.oiData?.shortCount);
+
+  const filters = opts?.advancedFilters ?? null;
+  let signalExpired = false;
+  let alternateBlocked = false;
+  let alternateReason: string | undefined;
+
+  // Apply advanced filters to bias
+  if (filters && bias !== "NEUTRAL") {
+    // Choppiness Index: if market is choppy, suppress directional signals
+    if (filters.isChoppy) {
+      confidence = Math.max(30, confidence - 20);
+    }
+
+    // Range Filter + RQK confirmation: both must agree for full confidence
+    const rfAgrees = (bias === "BULLISH" && filters.rfConfirmsBull) || (bias === "BEARISH" && filters.rfConfirmsBear);
+    const rqkAgrees = (bias === "BULLISH" && filters.rqkConfirmsBull) || (bias === "BEARISH" && filters.rqkConfirmsBear);
+
+    if (!rfAgrees && !rqkAgrees) {
+      // Neither filter confirms — reduce confidence heavily
+      confidence = Math.max(30, confidence - 25);
+      if (filters.isChoppy) {
+        bias = "NEUTRAL";
+        strength = "NEUTRAL";
+      }
+    } else if (!rfAgrees || !rqkAgrees) {
+      confidence = Math.max(35, confidence - 10);
+    } else {
+      confidence = Math.min(95, confidence + 5);
+    }
+
+    // Signal Expiry
+    const filtersConfirm = rfAgrees && rqkAgrees && !filters.isChoppy;
+    if (opts?.symbol) {
+      const expiry = applySignalExpiry(opts.symbol, bias, filtersConfirm);
+      if (expiry.expired) {
+        signalExpired = true;
+        bias = "NEUTRAL";
+        strength = "NEUTRAL";
+        confidence = 40;
+      }
+    }
+
+    // Alternate Signal
+    if (opts?.symbol && bias !== "NEUTRAL") {
+      const alt = applyAlternateSignal(opts.symbol, bias);
+      if (alt.blocked) {
+        alternateBlocked = true;
+        alternateReason = alt.reason;
+        confidence = Math.max(35, confidence - 15);
+      }
+    }
+  }
 
   const entry = underlyingValue;
   const targets = computeTargetsStops(entry, atr, bias, strikeStep, volInfo);
@@ -531,7 +795,12 @@ export function generateSignalFromPCR(
 
   const strengthLabel = strength !== "NEUTRAL" ? ` (${strength})` : "";
   const biasLabel = bias === "NEUTRAL" ? "Sideways" : bias;
-  const summary = `${biasLabel}${strengthLabel} | PCR ${pcrValue.toFixed(2)} | Strength: ${signalStrength.score}/${signalStrength.max} | Vol: ${volInfo.regime} | Max Pain: ${mp}`;
+  const filterStatus = filters
+    ? ` | RF:${filters.rfConfirmsBull ? "▲" : filters.rfConfirmsBear ? "▼" : "—"} RQK:${filters.rqkConfirmsBull ? "▲" : filters.rqkConfirmsBear ? "▼" : "—"} CHOP:${filters.choppiness}${filters.isChoppy ? "(choppy)" : ""}`
+    : "";
+  const expiryNote = signalExpired ? " | EXPIRED" : "";
+  const altNote = alternateBlocked ? " | ALT-BLOCKED" : "";
+  const summary = `${biasLabel}${strengthLabel} | PCR ${pcrValue.toFixed(2)} | Strength: ${signalStrength.score}/${signalStrength.max} | Vol: ${volInfo.regime} | Max Pain: ${mp}${filterStatus}${expiryNote}${altNote}`;
 
   return {
     bias, biasStrength: strength, entry, confidence,
@@ -541,6 +810,8 @@ export function generateSignalFromPCR(
     targets: bias !== "NEUTRAL" ? targets : undefined,
     bullishTargets, bearishTargets, optionsAdvisor, srLevels, sentiment,
     signalStrength, volatility: volInfo, partialExits, tradeDirection,
+    advancedFilters: filters ?? undefined,
+    signalExpired, alternateBlocked, alternateReason,
   };
 }
 
