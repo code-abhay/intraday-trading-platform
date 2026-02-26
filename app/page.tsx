@@ -215,7 +215,7 @@ export default function Home() {
   const isIndex = data?.source === "angel_one" && data?.marketData?.tradeVolume === 0;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100 font-sans">
+    <div className="flex-1 bg-zinc-950 text-zinc-100 font-sans">
       <nav className="border-b border-zinc-800 bg-zinc-900/50 px-6 py-3">
         <div className="flex items-center justify-between">
           <div className="flex gap-6">

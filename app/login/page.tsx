@@ -38,7 +38,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-950 flex items-center justify-center p-6">
+    <div className="flex-1 bg-zinc-950 flex items-center justify-center p-6">
       <div className="w-full max-w-sm rounded-lg border border-zinc-800 bg-zinc-900/50 p-6">
         <h1 className="text-xl font-bold text-emerald-400 mb-2">
           Angel One Login
