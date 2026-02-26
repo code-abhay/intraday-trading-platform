@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { cookies } from "next/headers";
 
-const SITE_PASSWORD = process.env.SITE_PASSWORD || "admin123";
+function getPassword(): string {
+  return process.env.SITE_PASSWORD || "admin123";
+}
 
 function hashToken(password: string): string {
   let hash = 0;
@@ -23,32 +24,34 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Password required" }, { status: 400 });
     }
 
-    if (password !== SITE_PASSWORD) {
+    const sitePassword = getPassword();
+
+    if (password !== sitePassword) {
       return NextResponse.json({ error: "Invalid password" }, { status: 401 });
     }
 
-    const token = hashToken(SITE_PASSWORD);
-    const cookieStore = await cookies();
-    cookieStore.set("site_auth", token, {
+    const token = hashToken(sitePassword);
+    const res = NextResponse.json({ success: true });
+    res.cookies.set("site_auth", token, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
       sameSite: "lax",
-      maxAge: 60 * 60 * 24 * 7, // 7 days
+      maxAge: 60 * 60 * 24 * 7,
       path: "/",
     });
 
-    return NextResponse.json({ success: true });
+    return res;
   } catch {
     return NextResponse.json({ error: "Server error" }, { status: 500 });
   }
 }
 
 export async function DELETE() {
-  const cookieStore = await cookies();
-  cookieStore.delete("site_auth");
-  return NextResponse.json({ success: true });
-}
-
-export function getExpectedToken(): string {
-  return hashToken(SITE_PASSWORD);
+  const res = NextResponse.json({ success: true });
+  res.cookies.set("site_auth", "", {
+    httpOnly: true,
+    maxAge: 0,
+    path: "/",
+  });
+  return res;
 }
