@@ -35,7 +35,7 @@ function AuthForm() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || "Login failed");
-      const redirect = searchParams.get("redirect") || "/";
+      const redirect = searchParams.get("redirect") || "/dashboard";
       router.push(redirect);
       router.refresh();
     } catch (err) {

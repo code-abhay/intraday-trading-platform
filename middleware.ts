@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATHS = ["/auth", "/api/auth"];
+const PUBLIC_PATHS = ["/auth", "/api/auth", "/terms", "/privacy", "/disclaimer"];
 
 function hashToken(password: string): string {
   let hash = 0;
@@ -16,7 +16,7 @@ function hashToken(password: string): string {
 export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  if (PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
+  if (pathname === "/" || PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {
     return NextResponse.next();
   }
 

@@ -61,7 +61,7 @@ export default function LoginPage() {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.details || data.error || "Login failed");
-      router.push("/");
+      router.push("/dashboard");
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Login failed");
@@ -202,7 +202,7 @@ export default function LoginPage() {
 
           <div className="mt-6 flex items-center justify-between">
             <Button variant="ghost" size="sm" asChild>
-              <Link href="/">
+              <Link href="/dashboard">
                 <ArrowLeft className="size-3.5" />
                 Back to Dashboard
               </Link>

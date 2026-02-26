@@ -10,12 +10,15 @@ After completing any code changes (fixes, features, refactors):
 1. **TypeScript check**: Run `npx tsc --noEmit` to verify no type errors
 2. **Git commit**: Stage all changes and commit with a descriptive message using HEREDOC format
 3. **Git push**: Push to `origin main`
-4. **Vercel deploy**: Run `npx vercel --prod` and wait for "Ready" status
-5. **Verify**: Confirm the deployment URL shows "Ready" in the output
+4. **Vercel preview**: Run `npx vercel` (without `--prod`) and share the preview URL with the user for review
+5. **Wait for approval**: Do NOT deploy to production until the user explicitly approves the preview
 
-Always do all 5 steps together. Never leave changes uncommitted or undeployed.
+Only after the user approves the preview:
 
-If the build fails on Vercel, fix the error immediately and re-deploy.
+6. **Vercel production deploy**: Run `npx vercel --prod` and wait for "Ready" status
+7. **Verify**: Confirm the deployment URL shows "Ready" in the output
+
+If the build fails on Vercel, fix the error immediately and re-deploy the preview.
 
 ## Paper Trade Storage Key
 

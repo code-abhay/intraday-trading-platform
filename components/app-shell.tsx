@@ -6,7 +6,7 @@ import { Sidebar } from "@/components/sidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 
-const AUTH_PATHS = ["/auth", "/login"];
+const NO_SHELL_PATHS = ["/auth", "/login", "/terms", "/privacy", "/disclaimer"];
 
 function Footer() {
   return (
@@ -41,7 +41,7 @@ function Footer() {
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
-  const isAuthPage = AUTH_PATHS.some((p) => pathname.startsWith(p));
+  const isShellless = pathname === "/" || NO_SHELL_PATHS.some((p) => pathname.startsWith(p));
 
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
@@ -50,7 +50,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     setMobileOpen(false);
   }, [pathname]);
 
-  if (isAuthPage) {
+  if (isShellless) {
     return (
       <div className="min-h-screen flex flex-col bg-zinc-950">
         <main className="flex-1 flex flex-col">{children}</main>
