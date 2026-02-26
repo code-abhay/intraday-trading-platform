@@ -13,7 +13,7 @@ function hashToken(password: string): string {
   return `auth_${Math.abs(hash).toString(36)}`;
 }
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
   if (pathname === "/" || PUBLIC_PATHS.some((p) => pathname.startsWith(p))) {

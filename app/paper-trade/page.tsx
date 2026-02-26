@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import { useEffect, useState, useCallback, useMemo } from "react";
 import { SEGMENTS, type SegmentId, getSegment } from "@/lib/segments";
 import { isMarketOpen, getMarketStatusMessage } from "@/lib/utils";
 import { useTradeSync } from "@/lib/use-trade-sync";
@@ -73,8 +73,6 @@ export default function PaperTradePage() {
   const [lotQty, setLotQty] = useState(1);
   const [settings, setSettings] = useState<Settings>({ autoExecute: false });
   const [autoExitLog, setAutoExitLog] = useState<string[]>([]);
-  const tradesRef = useRef(trades);
-  tradesRef.current = trades;
   const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
 
   useEffect(() => { setTrades(loadTrades()); setSettings(loadSettings()); }, []);
@@ -93,6 +91,13 @@ export default function PaperTradePage() {
   const unrealizedPnl = openTrades.reduce((s, t) => s + t.pnl, 0);
   const realizedPnl = closedTrades.reduce((s, t) => s + t.pnl, 0);
   const available = DEFAULT_CAPITAL + realizedPnl - totalInvested;
+  const openSegmentsKey = useMemo(() => {
+    const openSegs = new Set<SegmentId>();
+    for (const t of trades) {
+      if (t.status === "OPEN") openSegs.add(t.segment);
+    }
+    return Array.from(openSegs).sort().join(",");
+  }, [trades]);
 
   function addLog(msg: string) {
     const ts = new Date().toLocaleTimeString();
@@ -149,15 +154,24 @@ export default function PaperTradePage() {
       };
       setQuotes((prev) => ({ ...prev, [seg]: q }));
       setTrades((prev) => {
+        let hasOpenTradeForSegment = false;
+        let quoteUpdated = false;
         const updated = prev.map((t) => {
           if (t.status !== "OPEN" || t.segment !== seg) return t;
+          hasOpenTradeForSegment = true;
           const delta = q.optionDelta ?? 0.5;
           const entryUnd = t.entryUnderlying || t.strike;
           const premiumChange = (json.underlyingValue - entryUnd) * delta * (t.side === "CALL" ? 1 : -1);
           const newPremium = Math.max(1, Math.round(t.entryPremium + premiumChange));
-          return { ...t, currentPremium: newPremium, pnl: (newPremium - t.entryPremium) * t.qty * t.lotSize };
+          const nextPnl = (newPremium - t.entryPremium) * t.qty * t.lotSize;
+          if (newPremium === t.currentPremium && nextPnl === t.pnl) return t;
+          quoteUpdated = true;
+          return { ...t, currentPremium: newPremium, pnl: nextPnl };
         });
-        return processAutoExits(updated);
+        if (!hasOpenTradeForSegment) return prev;
+        const processed = processAutoExits(updated);
+        if (processed !== updated) return processed;
+        return quoteUpdated ? updated : prev;
       });
     } catch {}
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -165,16 +179,17 @@ export default function PaperTradePage() {
 
   useEffect(() => {
     if (!marketOpen) return;
-    fetchQuote(activeSegment);
-    const interval = setInterval(() => fetchQuote(activeSegment), 30000);
+    const refreshAllSegments = () => {
+      const openSegs = openSegmentsKey
+        ? (openSegmentsKey.split(",") as SegmentId[])
+        : [];
+      const targets = new Set<SegmentId>([activeSegment, ...openSegs]);
+      targets.forEach((seg) => { void fetchQuote(seg); });
+    };
+    refreshAllSegments();
+    const interval = setInterval(refreshAllSegments, 30000);
     return () => clearInterval(interval);
-  }, [activeSegment, fetchQuote, marketOpen]);
-
-  useEffect(() => {
-    if (!marketOpen) return;
-    const openSegs = [...new Set(trades.filter((t) => t.status === "OPEN").map((t) => t.segment))];
-    openSegs.forEach((s) => { if (s !== activeSegment) fetchQuote(s); });
-  }, [trades, activeSegment, fetchQuote, marketOpen]);
+  }, [activeSegment, fetchQuote, marketOpen, openSegmentsKey]);
 
   const q = quotes[activeSegment];
 

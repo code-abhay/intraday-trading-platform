@@ -5,6 +5,7 @@ import {
   computeOIBuildup,
   generateSignal,
   generateSignalFromPCR,
+  computeMultiFactorBias,
   pickBestITMStrike,
   computeAdvancedFilters,
   computeTechnicalIndicators,
@@ -54,6 +55,39 @@ interface NseRecords {
   expiryDates: string[];
 }
 
+const UPSTREAM_TIMEOUT_MS = 12_000;
+const SIGNALS_CACHE_TTL_MS = 12_000;
+const signalCache = new Map<string, { data: unknown; timestamp: number }>();
+const inFlightSignals = new Map<string, Promise<unknown>>();
+
+function getAuthScope(jwtToken?: string): string {
+  if (!jwtToken) return "public";
+  let hash = 0;
+  for (let i = 0; i < jwtToken.length; i++) {
+    hash = (hash << 5) - hash + jwtToken.charCodeAt(i);
+    hash |= 0;
+  }
+  return `auth_${Math.abs(hash).toString(36)}`;
+}
+
+async function withTimeout<T>(
+  promise: Promise<T>,
+  timeoutMs: number,
+  label: string
+): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 async function getNseCookies(): Promise<string> {
   const res = await fetch(NSE_BASE, {
     headers: NSE_HEADERS,
@@ -99,8 +133,16 @@ async function fetchNseOptionChain(
 }
 
 async function getSignalsFromNSE(nseSymbol: string) {
-  const cookies = await getNseCookies();
-  const records = await fetchNseOptionChain(cookies, nseSymbol);
+  const cookies = await withTimeout(
+    getNseCookies(),
+    UPSTREAM_TIMEOUT_MS,
+    "NSE cookies"
+  );
+  const records = await withTimeout(
+    fetchNseOptionChain(cookies, nseSymbol),
+    UPSTREAM_TIMEOUT_MS,
+    "NSE option chain"
+  );
   const { data, underlyingValue } = records;
 
   const segment = SEGMENTS.find((s) => s.nseSymbol === nseSymbol);
@@ -232,19 +274,74 @@ async function getSignalsFromAngelOne(
   const segment = getSegment(symbol as SegmentId);
   const step = segment.strikeStep;
 
-  // 1. PCR
-  const pcrList = await angelOneGetPCR(jwtToken, apiKey);
+  const fmtDate = (d: Date) =>
+    `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d
+      .getDate()
+      .toString()
+      .padStart(2, "0")}`;
+
+  const now = new Date();
+  const fromDate = new Date(now);
+  fromDate.setDate(fromDate.getDate() - 25);
+  const fromStr = `${fmtDate(fromDate)} 09:15`;
+  const toStr = `${fmtDate(now)} 15:30`;
+
+  const [pcrResult, quoteResult, candleResult, oiBuildupResult] =
+    await Promise.allSettled([
+      withTimeout(angelOneGetPCR(jwtToken, apiKey), UPSTREAM_TIMEOUT_MS, "Angel PCR"),
+      withTimeout(
+        angelOneGetMarketQuote(
+          jwtToken,
+          apiKey,
+          segment.exchange,
+          segment.angelToken,
+          "FULL"
+        ),
+        UPSTREAM_TIMEOUT_MS,
+        "Angel market quote"
+      ),
+      withTimeout(
+        angelOneGetCandleData(
+          jwtToken,
+          apiKey,
+          segment.exchange,
+          segment.angelToken,
+          "ONE_DAY",
+          fromStr,
+          toStr
+        ),
+        UPSTREAM_TIMEOUT_MS,
+        "Angel daily candles"
+      ),
+      withTimeout(
+        Promise.all([
+          angelOneGetOIBuildup(jwtToken, apiKey, "Long Built Up", "NEAR"),
+          angelOneGetOIBuildup(jwtToken, apiKey, "Short Built Up", "NEAR"),
+        ]),
+        UPSTREAM_TIMEOUT_MS,
+        "Angel OI buildup"
+      ),
+    ]);
+
+  if (pcrResult.status !== "fulfilled") {
+    throw pcrResult.reason instanceof Error
+      ? pcrResult.reason
+      : new Error("Failed to fetch PCR");
+  }
+
+  const pcrList = pcrResult.value;
   const pcrItem = pcrList.find((p) =>
     segment.angelPCRFilter(p.tradingSymbol ?? "")
   );
-
   if (!pcrItem) {
     const symbols = pcrList.slice(0, 8).map((p) => p.tradingSymbol).join(", ");
-    throw new Error(`${segment.label} not found in PCR. Available: ${symbols || "none"}`);
+    throw new Error(
+      `${segment.label} not found in PCR. Available: ${symbols || "none"}`
+    );
   }
 
   // 2. Live Market Data (FULL mode)
-  let underlyingValue = 0;
+  let underlyingValue = segment.fallbackLTP;
   let todayOpen = 0;
   let todayHigh = 0;
   let todayLow = 0;
@@ -253,14 +350,8 @@ async function getSignalsFromAngelOne(
   let totBuyQuan = 0;
   let totSellQuan = 0;
 
-  try {
-    const quote = await angelOneGetMarketQuote(
-      jwtToken,
-      apiKey,
-      segment.exchange,
-      segment.angelToken,
-      "FULL"
-    );
+  if (quoteResult.status === "fulfilled") {
+    const quote = quoteResult.value;
     if (quote) {
       underlyingValue = quote.ltp;
       todayOpen = quote.open;
@@ -271,9 +362,8 @@ async function getSignalsFromAngelOne(
       totBuyQuan = quote.totBuyQuan;
       totSellQuan = quote.totSellQuan;
     }
-  } catch (e) {
-    console.warn("[signals] Market Quote (FULL) failed:", e);
-    underlyingValue = segment.fallbackLTP;
+  } else {
+    console.warn("[signals] Market Quote (FULL) failed:", quoteResult.reason);
   }
   if (!underlyingValue) underlyingValue = segment.fallbackLTP;
 
@@ -284,25 +374,8 @@ async function getSignalsFromAngelOne(
   let atr: number | undefined;
   let atrSma: number | undefined;
 
-  try {
-    const now = new Date();
-    const fromDate = new Date(now);
-    fromDate.setDate(fromDate.getDate() - 25);
-    const fmt = (d: Date) =>
-      `${d.getFullYear()}-${(d.getMonth() + 1).toString().padStart(2, "0")}-${d.getDate().toString().padStart(2, "0")}`;
-    const fromStr = `${fmt(fromDate)} 09:15`;
-    const toStr = `${fmt(now)} 15:30`;
-
-    const candles = await angelOneGetCandleData(
-      jwtToken,
-      apiKey,
-      segment.exchange,
-      segment.angelToken,
-      "ONE_DAY",
-      fromStr,
-      toStr
-    );
-
+  if (candleResult.status === "fulfilled") {
+    const candles = candleResult.value;
     if (candles.length >= 2) {
       const prior = candles[candles.length - 2];
       pdh = prior[2];
@@ -317,8 +390,8 @@ async function getSignalsFromAngelOne(
       const allRanges = candles.slice(-20).map((c) => c[2] - c[3]);
       atrSma = allRanges.reduce((s, r) => s + r, 0) / allRanges.length;
     }
-  } catch (e) {
-    console.warn("[signals] Candle data failed:", e);
+  } else {
+    console.warn("[signals] Candle data failed:", candleResult.reason);
   }
 
   if (!pdh && prevClose > 0) {
@@ -343,11 +416,15 @@ async function getSignalsFromAngelOne(
 
     for (const expiry of expiries) {
       try {
-        greeksData = await angelOneGetOptionGreeks(
-          jwtToken,
-          apiKey,
-          segment.angelSymbol,
-          expiry
+        greeksData = await withTimeout(
+          angelOneGetOptionGreeks(
+            jwtToken,
+            apiKey,
+            segment.angelSymbol,
+            expiry
+          ),
+          UPSTREAM_TIMEOUT_MS,
+          `Angel option greeks (${expiry})`
         );
         if (greeksData.length > 0) {
           // Use the actual expiry from the response data if available
@@ -388,32 +465,42 @@ async function getSignalsFromAngelOne(
   // 5. OI Buildup
   let oiBuildupLong: { symbol: string; oiChange: number; priceChange: number }[] = [];
   let oiBuildupShort: { symbol: string; oiChange: number; priceChange: number }[] = [];
-  try {
-    const [longUp, shortUp] = await Promise.all([
-      angelOneGetOIBuildup(jwtToken, apiKey, "Long Built Up", "NEAR"),
-      angelOneGetOIBuildup(jwtToken, apiKey, "Short Built Up", "NEAR"),
-    ]);
-    const filterRelevant = (list: typeof longUp) =>
-      list
-        .filter((r) => {
-          const sym = (r.tradingSymbol ?? "").toUpperCase();
-          return (
-            (symbol === "NIFTY" && sym.startsWith("NIFTY") && !sym.includes("BANK") && !sym.includes("MIDCP")) ||
-            (symbol === "BANKNIFTY" && sym.includes("BANKNIFTY")) ||
-            (symbol === "MIDCPNIFTY" && sym.includes("MIDCP")) ||
-            (symbol === "SENSEX" && sym.includes("SENSEX"))
-          );
-        })
-        .slice(0, 5)
-        .map((r) => ({
-          symbol: r.tradingSymbol ?? "",
-          oiChange: typeof r.netChangeOpnInterest === "string" ? parseFloat(r.netChangeOpnInterest) || 0 : (r.netChangeOpnInterest ?? 0),
-          priceChange: typeof r.percentChange === "string" ? parseFloat(r.percentChange) || 0 : (typeof r.percentChange === "number" ? r.percentChange : 0),
-        }));
+  const filterRelevant = (
+    list: Awaited<ReturnType<typeof angelOneGetOIBuildup>>
+  ) =>
+    list
+      .filter((r) => {
+        const sym = (r.tradingSymbol ?? "").toUpperCase();
+        return (
+          (symbol === "NIFTY" &&
+            sym.startsWith("NIFTY") &&
+            !sym.includes("BANK") &&
+            !sym.includes("MIDCP")) ||
+          (symbol === "BANKNIFTY" && sym.includes("BANKNIFTY")) ||
+          (symbol === "MIDCPNIFTY" && sym.includes("MIDCP")) ||
+          (symbol === "SENSEX" && sym.includes("SENSEX"))
+        );
+      })
+      .slice(0, 5)
+      .map((r) => ({
+        symbol: r.tradingSymbol ?? "",
+        oiChange:
+          typeof r.netChangeOpnInterest === "string"
+            ? parseFloat(r.netChangeOpnInterest) || 0
+            : (r.netChangeOpnInterest ?? 0),
+        priceChange:
+          typeof r.percentChange === "string"
+            ? parseFloat(r.percentChange) || 0
+            : typeof r.percentChange === "number"
+              ? r.percentChange
+              : 0,
+      }));
+  if (oiBuildupResult.status === "fulfilled") {
+    const [longUp, shortUp] = oiBuildupResult.value;
     oiBuildupLong = filterRelevant(longUp);
     oiBuildupShort = filterRelevant(shortUp);
-  } catch (e) {
-    console.warn("[signals] OI Buildup failed:", e);
+  } else {
+    console.warn("[signals] OI Buildup failed:", oiBuildupResult.reason);
   }
 
   // Price action data for multi-factor bias
@@ -443,9 +530,18 @@ async function getSignalsFromAngelOne(
     const todayFrom = `${fmtDT(from3d)} 09:15`;
     const todayTo = `${fmtDT(now)} 15:30`;
 
-    const intradayCandles = await angelOneGetCandleData(
-      jwtToken, apiKey, segment.exchange, segment.angelToken,
-      "FIVE_MINUTE", todayFrom, todayTo,
+    const intradayCandles = await withTimeout(
+      angelOneGetCandleData(
+        jwtToken,
+        apiKey,
+        segment.exchange,
+        segment.angelToken,
+        "FIVE_MINUTE",
+        todayFrom,
+        todayTo
+      ),
+      UPSTREAM_TIMEOUT_MS,
+      "Angel intraday candles"
     );
 
     if (intradayCandles.length >= 10) {
@@ -497,7 +593,6 @@ async function getSignalsFromAngelOne(
       tradeVolume: parseFloat(String(g.tradeVolume ?? 0)) || 0,
     })).filter((g) => !isNaN(g.strike));
 
-    const { computeMultiFactorBias } = await import("@/lib/strategy");
     const preBias = computeMultiFactorBias(pcrItem.pcr, priceAction, technicalIndicators, advancedFilters);
     const isCallSide = preBias.bias === "BULLISH" || preBias.bias === "NEUTRAL";
 
@@ -549,7 +644,11 @@ async function getSignalsFromAngelOne(
     console.log(`[signals] Searching for option: ${optExchange}:${tradingSymbol}`);
 
     try {
-      const scripResults = await angelOneSearchScrip(jwtToken, apiKey, optExchange, tradingSymbol);
+      const scripResults = await withTimeout(
+        angelOneSearchScrip(jwtToken, apiKey, optExchange, tradingSymbol),
+        UPSTREAM_TIMEOUT_MS,
+        "Angel option search"
+      );
 
       if (scripResults.length > 0) {
         const scrip = scripResults[0];
@@ -558,8 +657,16 @@ async function getSignalsFromAngelOne(
         console.log(`[signals] Found option scrip: ${scrip.tradingsymbol} token=${scrip.symboltoken}`);
 
         // Get real LTP for this option
-        const optQuote = await angelOneGetMarketQuote(
-          jwtToken, apiKey, optExchange, scrip.symboltoken, "LTP"
+        const optQuote = await withTimeout(
+          angelOneGetMarketQuote(
+            jwtToken,
+            apiKey,
+            optExchange,
+            scrip.symboltoken,
+            "LTP"
+          ),
+          UPSTREAM_TIMEOUT_MS,
+          "Angel option quote"
         );
         if (optQuote && optQuote.ltp > 0) {
           realOptionPremium = optQuote.ltp;
@@ -585,13 +692,32 @@ async function getSignalsFromAngelOne(
         console.warn(`[signals] No scrip found for ${tradingSymbol}, trying partial search...`);
         // Try partial search with just symbol + expiry
         const partialSymbol = `${segment.angelSymbol}${matchedExpiry.slice(0, 2)}${matchedExpiry.slice(2, 5)}${matchedExpiry.slice(7, 9)}`;
-        const partialResults = await angelOneSearchScrip(jwtToken, apiKey, optExchange, `${partialSymbol}${advisor.strike}${optType}`);
+        const partialResults = await withTimeout(
+          angelOneSearchScrip(
+            jwtToken,
+            apiKey,
+            optExchange,
+            `${partialSymbol}${advisor.strike}${optType}`
+          ),
+          UPSTREAM_TIMEOUT_MS,
+          "Angel option partial search"
+        );
         if (partialResults.length > 0) {
           const scrip = partialResults[0];
           optionSymbolName = scrip.tradingsymbol;
           optionSymbolToken = scrip.symboltoken;
 
-          const optQuote = await angelOneGetMarketQuote(jwtToken, apiKey, optExchange, scrip.symboltoken, "LTP");
+          const optQuote = await withTimeout(
+            angelOneGetMarketQuote(
+              jwtToken,
+              apiKey,
+              optExchange,
+              scrip.symboltoken,
+              "LTP"
+            ),
+            UPSTREAM_TIMEOUT_MS,
+            "Angel option quote (partial)"
+          );
           if (optQuote && optQuote.ltp > 0) {
             realOptionPremium = optQuote.ltp;
             signal.optionsAdvisor!.premium = realOptionPremium;
@@ -657,13 +783,14 @@ async function getSignalsFromAngelOne(
   };
 }
 
-export async function GET(request: NextRequest) {
-  const symbolParam = request.nextUrl.searchParams.get("symbol") || "NIFTY";
-  const segment = SEGMENTS.find((s) => s.id === symbolParam) ?? SEGMENTS[0];
-  const symbol = segment.id;
-
+async function resolveSignalsData(
+  segment: (typeof SEGMENTS)[number],
+  symbol: SegmentId,
+  apiKey?: string,
+  jwtToken?: string
+) {
   if (!isMarketOpen()) {
-    return NextResponse.json({
+    return {
       source: "demo" as const,
       symbol,
       underlyingValue: segment.fallbackLTP,
@@ -672,7 +799,8 @@ export async function GET(request: NextRequest) {
         confidence: 0,
         pcr: { value: 0, bias: "N/A", callOI: 0, putOI: 0 },
         maxPain: 0,
-        summary: "Market is closed. Trading hours: 9:15 AM – 3:30 PM IST (Mon–Fri).",
+        summary:
+          "Market is closed. Trading hours: 9:15 AM – 3:30 PM IST (Mon–Fri).",
       },
       maxPain: [],
       oiTable: undefined,
@@ -680,16 +808,12 @@ export async function GET(request: NextRequest) {
       oiBuildupShort: undefined,
       marketClosed: true,
       timestamp: new Date().toISOString(),
-    });
+    };
   }
-
-  const apiKey = process.env.ANGEL_API_KEY;
-  const jwtToken = request.cookies.get(JWT_COOKIE)?.value;
 
   if (apiKey && jwtToken) {
     try {
-      const data = await getSignalsFromAngelOne(jwtToken, apiKey, symbol);
-      return NextResponse.json(data);
+      return await getSignalsFromAngelOne(jwtToken, apiKey, symbol);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error("[signals] Angel One error:", message);
@@ -699,19 +823,29 @@ export async function GET(request: NextRequest) {
   if (segment.nseSymbol) {
     try {
       const data = await getSignalsFromNSE(segment.nseSymbol);
-      return NextResponse.json({ ...data, symbol });
+      return { ...data, symbol };
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error("[signals] NSE error:", message);
     }
   }
 
-  const yahooPrice = await fetchYahooIndexPrice(symbol);
+  let yahooPrice: number | null = null;
+  try {
+    yahooPrice = await withTimeout(
+      fetchYahooIndexPrice(symbol),
+      UPSTREAM_TIMEOUT_MS,
+      "Yahoo index price"
+    );
+  } catch {
+    yahooPrice = null;
+  }
   const uv = yahooPrice ?? segment.fallbackLTP;
   const step = segment.strikeStep;
   const demoSignal = generateSignalFromPCR(1.25, uv, uv, { strikeStep: step });
-  demoSignal.summary = `Demo: Sample BULLISH signal (PCR 1.25). Live data: login at /login during market hours.`;
-  const demoData = {
+  demoSignal.summary =
+    "Demo: Sample BULLISH signal (PCR 1.25). Live data: login at /login during market hours.";
+  return {
     source: "demo" as const,
     symbol,
     underlyingValue: uv,
@@ -728,5 +862,50 @@ export async function GET(request: NextRequest) {
     oiBuildupShort: undefined,
     timestamp: new Date().toISOString(),
   };
-  return NextResponse.json(demoData);
+}
+
+export async function GET(request: NextRequest) {
+  const symbolParam = request.nextUrl.searchParams.get("symbol") || "NIFTY";
+  const segment = SEGMENTS.find((s) => s.id === symbolParam) ?? SEGMENTS[0];
+  const symbol = segment.id;
+  const apiKey = process.env.ANGEL_API_KEY;
+  const jwtToken = request.cookies.get(JWT_COOKIE)?.value;
+
+  const cacheAuthScope = apiKey && jwtToken ? getAuthScope(jwtToken) : "public";
+  const cacheKey = `${symbol}:${cacheAuthScope}`;
+  const cached = signalCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < SIGNALS_CACHE_TTL_MS) {
+    return NextResponse.json(cached.data);
+  }
+
+  const inflight = inFlightSignals.get(cacheKey);
+  if (inflight) {
+    try {
+      const sharedData = await inflight;
+      return NextResponse.json(sharedData);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unknown error";
+      return NextResponse.json(
+        { error: "Failed to fetch signals", details: message },
+        { status: 500 }
+      );
+    }
+  }
+
+  const requestPromise = resolveSignalsData(segment, symbol, apiKey, jwtToken);
+  inFlightSignals.set(cacheKey, requestPromise);
+
+  try {
+    const data = await requestPromise;
+    signalCache.set(cacheKey, { data, timestamp: Date.now() });
+    return NextResponse.json(data);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json(
+      { error: "Failed to fetch signals", details: message },
+      { status: 500 }
+    );
+  } finally {
+    inFlightSignals.delete(cacheKey);
+  }
 }
