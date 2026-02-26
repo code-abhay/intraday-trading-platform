@@ -16,6 +16,15 @@ interface TargetsStops {
   rr3: number;
 }
 
+interface OptionTargets {
+  premiumEntry: number;
+  premiumSL: number;
+  premiumT1: number;
+  premiumT2: number;
+  premiumT3: number;
+  premiumTrailSL: number;
+}
+
 interface OptionsAdvisor {
   strike: number;
   side: string;
@@ -27,6 +36,7 @@ interface OptionsAdvisor {
   theta: number;
   moneyness: string;
   recommendation: string;
+  optionTargets?: OptionTargets;
 }
 
 interface SRLevels {
@@ -147,48 +157,11 @@ interface SignalsResponse {
   timestamp: string;
 }
 
-export type TradeStatus = "OPEN" | "T1_HIT" | "T2_HIT" | "T3_HIT" | "SL_HIT" | "TRAILING_SL_HIT" | "CANCELLED";
-
-export interface SuggestedTrade {
-  id: string;
-  symbol: string;
-  segmentLabel: string;
-  bias: string;
-  entry: number;
-  stopLoss: number;
-  t1: number;
-  t2: number;
-  t3: number;
-  trailingStop: number;
-  strike?: number;
-  optionSide?: string;
-  premium?: number;
-  expiry?: string;
-  status: TradeStatus;
-  createdAt: string;
-}
-
-const TRADES_STORAGE_KEY = "intraday_suggested_trades";
-
-function loadTrades(): SuggestedTrade[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const s = localStorage.getItem(TRADES_STORAGE_KEY);
-    return s ? JSON.parse(s) : [];
-  } catch { return []; }
-}
-
-function saveTrades(trades: SuggestedTrade[]) {
-  if (typeof window === "undefined") return;
-  try { localStorage.setItem(TRADES_STORAGE_KEY, JSON.stringify(trades)); } catch {}
-}
-
 export default function Home() {
   const [segment, setSegment] = useState<SegmentId>("NIFTY");
   const [data, setData] = useState<SignalsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [trades, setTrades] = useState<SuggestedTrade[]>([]);
 
   const fetchSignals = useCallback(async () => {
     try {
@@ -207,7 +180,6 @@ export default function Home() {
     }
   }, [segment]);
 
-  useEffect(() => { setTrades(loadTrades()); }, []);
   useEffect(() => {
     fetchSignals();
     const interval = setInterval(fetchSignals, 30000);
@@ -223,6 +195,7 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <div className="flex gap-6">
             <a href="/" className="font-semibold text-emerald-400">Dashboard</a>
+            <a href="/paper-trade" className="text-zinc-400 hover:text-zinc-200">Paper Trade</a>
             <a href="/login" className="text-zinc-400 hover:text-zinc-200">Angel One Login</a>
           </div>
           <LogoutButton />
@@ -432,89 +405,7 @@ export default function Home() {
             </div>
           </div>
 
-          {/* Suggested Trades */}
-          <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4">
-            <h2 className="text-lg font-semibold text-emerald-400 mb-3">Suggested Trades</h2>
-            {trades.length === 0 ? (
-              <p className="text-zinc-500 text-sm">No trades yet. Add a signal above when bias is BULLISH or BEARISH.</p>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead>
-                    <tr className="text-left text-zinc-500 border-b border-zinc-700">
-                      <th className="py-2 px-2">Segment</th>
-                      <th className="py-2 px-2">Option</th>
-                      <th className="py-2 px-2">Premium</th>
-                      <th className="py-2 px-2">Entry</th>
-                      <th className="py-2 px-2">SL</th>
-                      <th className="py-2 px-2">T1</th>
-                      <th className="py-2 px-2">T2</th>
-                      <th className="py-2 px-2">T3</th>
-                      <th className="py-2 px-2">Status</th>
-                      <th className="py-2 px-2">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {trades.map((t) => (
-                      <tr key={t.id} className="border-b border-zinc-800 hover:bg-zinc-800/50">
-                        <td className="py-2 px-2 font-medium">{t.segmentLabel}</td>
-                        <td className={`py-2 px-2 font-medium ${t.optionSide === "CALL" ? "text-emerald-400" : t.optionSide === "PUT" ? "text-red-400" : ""}`}>
-                          {t.strike ? `${t.strike} ${t.optionSide ?? t.bias}` : t.bias}
-                          {t.expiry && <span className="text-zinc-500 text-xs block">{t.expiry}</span>}
-                        </td>
-                        <td className="py-2 px-2">{t.premium ? `₹${t.premium}` : "—"}</td>
-                        <td className="py-2 px-2">{t.entry}</td>
-                        <td className="py-2 px-2 text-red-400">{t.stopLoss}</td>
-                        <td className="py-2 px-2 text-emerald-400">{t.t1}</td>
-                        <td className="py-2 px-2 text-emerald-400">{t.t2}</td>
-                        <td className="py-2 px-2 text-emerald-400">{t.t3}</td>
-                        <td className="py-2 px-2">
-                          <span className={`rounded px-2 py-0.5 text-xs font-medium ${
-                            t.status === "OPEN" ? "bg-emerald-900/50 text-emerald-400" :
-                            t.status === "T3_HIT" ? "bg-emerald-900/50 text-emerald-400" :
-                            t.status === "SL_HIT" || t.status === "TRAILING_SL_HIT" ? "bg-red-900/50 text-red-400" :
-                            t.status === "T1_HIT" || t.status === "T2_HIT" ? "bg-amber-900/50 text-amber-400" :
-                            "bg-zinc-700 text-zinc-400"
-                          }`}>{t.status.replace(/_/g, " ")}</span>
-                        </td>
-                        <td className="py-2 px-2">
-                          <div className="flex items-center gap-2">
-                            <select
-                              value={t.status}
-                              onChange={(e) => {
-                                const s = e.target.value as TradeStatus;
-                                const next = trades.map((x) => x.id === t.id ? { ...x, status: s } : x);
-                                setTrades(next);
-                                saveTrades(next);
-                              }}
-                              className="rounded border border-zinc-600 bg-zinc-800 px-2 py-1 text-xs"
-                            >
-                              <option value="OPEN">OPEN</option>
-                              <option value="T1_HIT">T1 HIT</option>
-                              <option value="T2_HIT">T2 HIT</option>
-                              <option value="T3_HIT">T3 HIT</option>
-                              <option value="SL_HIT">SL HIT</option>
-                              <option value="TRAILING_SL_HIT">Trail SL HIT</option>
-                              <option value="CANCELLED">CANCELLED</option>
-                            </select>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                const next = trades.filter((x) => x.id !== t.id);
-                                setTrades(next);
-                                saveTrades(next);
-                              }}
-                              className="rounded bg-red-900/50 px-2 py-0.5 text-xs text-red-400 hover:bg-red-900/70"
-                            >Remove</button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
+          {/* (Trades moved to /paper-trade) */}
 
           {/* Options Advisor — with Add to Trade */}
           {sig?.optionsAdvisor && (
@@ -531,39 +422,12 @@ export default function Home() {
                   </span>
                 </div>
                 {sig.bias !== "NEUTRAL" && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (!data || !sig.optionsAdvisor) return;
-                      const segCfg = SEGMENTS.find((s) => s.id === data.symbol) ?? SEGMENTS[0];
-                      const advisor = sig.optionsAdvisor!;
-                      const targets = sig.targets ?? sig.bullishTargets;
-                      const t: SuggestedTrade = {
-                        id: `t-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-                        symbol: data.symbol,
-                        segmentLabel: segCfg.label,
-                        bias: sig.bias,
-                        entry: targets?.entry ?? data.underlyingValue,
-                        stopLoss: targets?.stopLoss ?? 0,
-                        t1: targets?.t1 ?? 0,
-                        t2: targets?.t2 ?? 0,
-                        t3: targets?.t3 ?? 0,
-                        trailingStop: targets?.trailingStop ?? 0,
-                        strike: advisor.strike,
-                        optionSide: advisor.side,
-                        premium: advisor.premium,
-                        expiry: data.expiry,
-                        status: "OPEN",
-                        createdAt: new Date().toISOString(),
-                      };
-                      const next = [t, ...trades];
-                      setTrades(next);
-                      saveTrades(next);
-                    }}
+                  <a
+                    href="/paper-trade"
                     className="shrink-0 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500"
                   >
-                    Add to Trades
-                  </button>
+                    Take Paper Trade
+                  </a>
                 )}
               </div>
               <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -602,6 +466,38 @@ export default function Home() {
                   </span>
                 </div>
               </div>
+              {/* Option Premium Targets */}
+              {sig.optionsAdvisor.optionTargets && sig.bias !== "NEUTRAL" && (
+                <div className="mt-3 rounded bg-zinc-800/50 p-3">
+                  <h3 className="text-xs font-semibold text-zinc-400 uppercase tracking-wide mb-2">Option Premium Targets</h3>
+                  <div className="grid grid-cols-3 sm:grid-cols-6 gap-2 text-sm">
+                    <div className="text-center">
+                      <div className="text-zinc-500 text-xs">Entry</div>
+                      <div className="font-bold">₹{sig.optionsAdvisor.optionTargets.premiumEntry}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-zinc-500 text-xs">SL (-40%)</div>
+                      <div className="font-bold text-red-400">₹{sig.optionsAdvisor.optionTargets.premiumSL}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-zinc-500 text-xs">T1 (+50%)</div>
+                      <div className="font-bold text-emerald-400">₹{sig.optionsAdvisor.optionTargets.premiumT1}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-zinc-500 text-xs">T2 (+100%)</div>
+                      <div className="font-bold text-emerald-400">₹{sig.optionsAdvisor.optionTargets.premiumT2}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-zinc-500 text-xs">T3 (+150%)</div>
+                      <div className="font-bold text-emerald-400">₹{sig.optionsAdvisor.optionTargets.premiumT3}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-zinc-500 text-xs">Trail SL</div>
+                      <div className="font-bold text-amber-400">₹{sig.optionsAdvisor.optionTargets.premiumTrailSL}</div>
+                    </div>
+                  </div>
+                </div>
+              )}
               {sig.bias === "NEUTRAL" && (
                 <p className="mt-2 text-xs text-zinc-500">
                   Market is sideways — consider straddle/strangle strategy or wait for directional bias.

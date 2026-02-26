@@ -440,6 +440,7 @@ async function getSignalsFromAngelOne(
       greekIV,
       priceAction,
       oiData,
+      expiryDay: segment.expiryDay,
     }
   );
 
