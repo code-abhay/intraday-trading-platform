@@ -524,7 +524,7 @@ async function getSignalsFromAngelOne(
     stable?.stickyExpiryDateKey === istDateKey ? stable.stickyExpiry : undefined;
 
   if (segment.exchange === "NSE" || segment.exchange === "BSE") {
-    // Use segment-specific expiry day (NIFTY=Tue, BANKNIFTY=Wed, SENSEX=Fri, MIDCPNIFTY=Mon)
+    // Use segment-specific expiry day (NIFTY=Tue, BANKNIFTY=Wed, SENSEX=Thu, MIDCPNIFTY=Mon)
     const expiries = getExpiryCandidates(segment.expiryDay);
     const orderedExpiries = stickyExpiry
       ? [stickyExpiry, ...expiries.filter((e) => e !== stickyExpiry)]

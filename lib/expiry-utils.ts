@@ -2,7 +2,7 @@
  * Weekly expiry days per segment:
  *   NIFTY     → Tuesday  (day 2)
  *   BANKNIFTY → Wednesday (day 3)
- *   SENSEX    → Friday   (day 5)
+ *   SENSEX    → Thursday (day 4)
  *   MIDCPNIFTY→ Monday   (day 1)
  *
  * Format for Angel One Option Greeks: DDMMMYYYY (e.g. "04MAR2026")

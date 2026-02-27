@@ -5,7 +5,7 @@
  * Weekly expiry days (0=Sun, 1=Mon, 2=Tue, 3=Wed, 4=Thu, 5=Fri, 6=Sat):
  *   NIFTY      → Tuesday  (2)
  *   BANKNIFTY  → Wednesday(3)
- *   SENSEX     → Friday   (5)
+ *   SENSEX     → Thursday (4)
  *   MIDCPNIFTY → Monday   (1)
  */
 
@@ -116,7 +116,7 @@ export const SEGMENTS: SegmentConfig[] = [
     strikeStep: 100,
     lotSize: 20,
     fallbackLTP: 82500,
-    expiryDay: 5, // Friday
+    expiryDay: 4, // Thursday
     strategy: {
       rsiBullishThreshold: 52,
       rsiBearishThreshold: 48,
