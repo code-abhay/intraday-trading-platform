@@ -60,8 +60,24 @@ interface NseRecords {
 
 const UPSTREAM_TIMEOUT_MS = 12_000;
 const SIGNALS_CACHE_TTL_MS = 12_000;
+const STABILITY_CACHE_TTL_MS = 3 * 60_000;
 const signalCache = new Map<string, { data: unknown; timestamp: number }>();
 const inFlightSignals = new Map<string, Promise<unknown>>();
+
+interface SignalStabilityCacheEntry {
+  stickyExpiry?: string;
+  stickyExpiryDateKey?: string;
+  technicalIndicators?: TechnicalIndicators;
+  advancedFilters?: AdvancedFilters;
+  indicatorsUpdatedAt?: number;
+  optionPremium?: number;
+  optionSymbol?: string;
+  optionStrike?: number;
+  optionSide?: "CALL" | "PUT" | "BALANCED";
+  premiumUpdatedAt?: number;
+}
+
+const signalStabilityCache = new Map<string, SignalStabilityCacheEntry>();
 
 function getAuthScope(jwtToken?: string): string {
   if (!jwtToken) return "public";
@@ -71,6 +87,19 @@ function getAuthScope(jwtToken?: string): string {
     hash |= 0;
   }
   return `auth_${Math.abs(hash).toString(36)}`;
+}
+
+function getStabilityKey(symbol: string, authScope: string): string {
+  return `${symbol}:${authScope}`;
+}
+
+function getIstDateKey(date: Date): string {
+  const istMs = date.getTime() + 330 * 60 * 1000;
+  const ist = new Date(istMs);
+  const yyyy = ist.getUTCFullYear();
+  const mm = String(ist.getUTCMonth() + 1).padStart(2, "0");
+  const dd = String(ist.getUTCDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 async function withTimeout<T>(
@@ -335,7 +364,8 @@ function computeMaxPainFromGreeks(
 async function getSignalsFromAngelOne(
   jwtToken: string,
   apiKey: string,
-  symbol: string
+  symbol: string,
+  authScope: string
 ) {
   const segment = getSegment(symbol as SegmentId);
   const step = segment.strikeStep;
@@ -347,6 +377,22 @@ async function getSignalsFromAngelOne(
       .padStart(2, "0")}`;
 
   const now = new Date();
+  const nowMs = now.getTime();
+  const istDateKey = getIstDateKey(now);
+  const stabilityKey = getStabilityKey(symbol, authScope);
+  const stable = signalStabilityCache.get(stabilityKey);
+  const hasFreshIndicators = Boolean(
+    stable?.technicalIndicators &&
+      stable?.advancedFilters &&
+      typeof stable.indicatorsUpdatedAt === "number" &&
+      nowMs - stable.indicatorsUpdatedAt < STABILITY_CACHE_TTL_MS
+  );
+  const hasFreshPremium = Boolean(
+    typeof stable?.optionPremium === "number" &&
+      stable.optionPremium > 0 &&
+      typeof stable.premiumUpdatedAt === "number" &&
+      nowMs - stable.premiumUpdatedAt < STABILITY_CACHE_TTL_MS
+  );
   const fromDate = new Date(now);
   fromDate.setDate(fromDate.getDate() - 25);
   const fromStr = `${fmtDate(fromDate)} 09:15`;
@@ -474,13 +520,21 @@ async function getSignalsFromAngelOne(
   let oiTable: { strike: number; ceOI: number; peOI: number; ceIV?: number; peIV?: number; ceDelta?: number; peDelta?: number }[] = [];
   let greeksMaxPain: { strike: number; totalPayout: number }[] = [];
   let matchedExpiry = "";
+  const stickyExpiry =
+    stable?.stickyExpiryDateKey === istDateKey ? stable.stickyExpiry : undefined;
 
   if (segment.exchange === "NSE" || segment.exchange === "BSE") {
     // Use segment-specific expiry day (NIFTY=Tue, BANKNIFTY=Wed, SENSEX=Fri, MIDCPNIFTY=Mon)
     const expiries = getExpiryCandidates(segment.expiryDay);
+    const orderedExpiries = stickyExpiry
+      ? [stickyExpiry, ...expiries.filter((e) => e !== stickyExpiry)]
+      : expiries;
     console.log(`[signals] Expiry candidates for ${symbol} (day=${segment.expiryDay}):`, expiries);
+    if (stickyExpiry) {
+      console.log(`[signals] Sticky expiry prioritised for ${symbol}:`, stickyExpiry);
+    }
 
-    for (const expiry of expiries) {
+    for (const expiry of orderedExpiries) {
       try {
         greeksData = await withTimeout(
           angelOneGetOptionGreeks(
@@ -500,6 +554,11 @@ async function getSignalsFromAngelOne(
           } else {
             matchedExpiry = expiry;
           }
+          signalStabilityCache.set(stabilityKey, {
+            ...(stable ?? {}),
+            stickyExpiry: matchedExpiry,
+            stickyExpiryDateKey: istDateKey,
+          });
           console.log(`[signals] Option Greeks success for expiry ${expiry} (actual: ${matchedExpiry}): ${greeksData.length} rows`);
           break;
         }
@@ -594,6 +653,7 @@ async function getSignalsFromAngelOne(
   let advancedFilters: AdvancedFilters | null = null;
   let technicalIndicators: TechnicalIndicators | null = null;
   let orbContext: OrbContext | null = null;
+  let usedCachedIndicators = false;
   try {
     const now = new Date();
     const fmtDT = (d: Date) =>
@@ -661,6 +721,26 @@ async function getSignalsFromAngelOne(
     }
   } catch (e) {
     console.warn("[signals] Intraday candle fetch failed:", e);
+  }
+
+  if (hasFreshIndicators) {
+    if (!technicalIndicators && stable?.technicalIndicators) {
+      technicalIndicators = stable.technicalIndicators;
+      usedCachedIndicators = true;
+    }
+    if (!advancedFilters && stable?.advancedFilters) {
+      advancedFilters = stable.advancedFilters;
+      usedCachedIndicators = true;
+    }
+    if (usedCachedIndicators) {
+      const ageSec = Math.max(
+        0,
+        Math.round((nowMs - (stable?.indicatorsUpdatedAt ?? nowMs)) / 1000)
+      );
+      console.warn(
+        `[signals] Reusing cached indicator context for ${symbol} (${ageSec}s old)`
+      );
+    }
   }
 
   // ATM CE IV from greeks for options advisor
@@ -731,6 +811,24 @@ async function getSignalsFromAngelOne(
   // 6. Fetch REAL option premium via SearchScrip + Market Quote
   let realOptionPremium: number | undefined;
   let optionSymbolName = "";
+  let optionPremiumSource: "live" | "estimated" | "cached_live" = "estimated";
+
+  const applyPremiumToAdvisor = (premium: number) => {
+    if (!signal.optionsAdvisor) return;
+    signal.optionsAdvisor.premium = premium;
+    signal.optionsAdvisor.recommendation =
+      `BUY ${signal.optionsAdvisor.strike} ${signal.optionsAdvisor.side} @ ₹${premium}`;
+    if (signal.optionsAdvisor.optionTargets) {
+      signal.optionsAdvisor.optionTargets = {
+        premiumEntry: premium,
+        premiumSL: Math.round(premium * 0.80),
+        premiumT1: Math.round(premium * 1.25),
+        premiumT2: Math.round(premium * 1.50),
+        premiumT3: Math.round(premium * 1.80),
+        premiumTrailSL: Math.round(premium * 1.10),
+      };
+    }
+  };
 
   if (signal.optionsAdvisor && matchedExpiry && signal.bias !== "NEUTRAL") {
     const advisor = signal.optionsAdvisor;
@@ -766,23 +864,9 @@ async function getSignalsFromAngelOne(
         );
         if (optQuote && optQuote.ltp > 0) {
           realOptionPremium = optQuote.ltp;
+          optionPremiumSource = "live";
           console.log(`[signals] Real option LTP: ₹${realOptionPremium}`);
-
-          // Override the estimated premium with real premium
-          signal.optionsAdvisor!.premium = realOptionPremium;
-          signal.optionsAdvisor!.recommendation =
-            `BUY ${advisor.strike} ${advisor.side} @ ₹${realOptionPremium}`;
-
-          if (signal.optionsAdvisor!.optionTargets) {
-            signal.optionsAdvisor!.optionTargets = {
-              premiumEntry: realOptionPremium,
-              premiumSL: Math.round(realOptionPremium * 0.80),
-              premiumT1: Math.round(realOptionPremium * 1.25),
-              premiumT2: Math.round(realOptionPremium * 1.50),
-              premiumT3: Math.round(realOptionPremium * 1.80),
-              premiumTrailSL: Math.round(realOptionPremium * 1.10),
-            };
-          }
+          applyPremiumToAdvisor(realOptionPremium);
         }
       } else {
         console.warn(`[signals] No scrip found for ${tradingSymbol}, trying partial search...`);
@@ -815,18 +899,8 @@ async function getSignalsFromAngelOne(
           );
           if (optQuote && optQuote.ltp > 0) {
             realOptionPremium = optQuote.ltp;
-            signal.optionsAdvisor!.premium = realOptionPremium;
-            signal.optionsAdvisor!.recommendation = `BUY ${advisor.strike} ${advisor.side} @ ₹${realOptionPremium}`;
-            if (signal.optionsAdvisor!.optionTargets) {
-              signal.optionsAdvisor!.optionTargets = {
-                premiumEntry: realOptionPremium,
-                premiumSL: Math.round(realOptionPremium * 0.80),
-                premiumT1: Math.round(realOptionPremium * 1.25),
-                premiumT2: Math.round(realOptionPremium * 1.50),
-                premiumT3: Math.round(realOptionPremium * 1.80),
-                premiumTrailSL: Math.round(realOptionPremium * 1.10),
-              };
-            }
+            optionPremiumSource = "live";
+            applyPremiumToAdvisor(realOptionPremium);
           }
         }
       }
@@ -834,6 +908,53 @@ async function getSignalsFromAngelOne(
       console.warn("[signals] Option LTP fetch failed:", e);
     }
   }
+
+  if (
+    !realOptionPremium &&
+    signal.optionsAdvisor &&
+    hasFreshPremium &&
+    stable &&
+    typeof stable.optionPremium === "number" &&
+    stable.optionSide === signal.optionsAdvisor.side &&
+    typeof stable.optionStrike === "number" &&
+    Math.abs(stable.optionStrike - signal.optionsAdvisor.strike) <= step
+  ) {
+    realOptionPremium = stable.optionPremium;
+    optionSymbolName = stable.optionSymbol ?? optionSymbolName;
+    optionPremiumSource = "cached_live";
+    applyPremiumToAdvisor(realOptionPremium);
+    const ageSec = Math.max(
+      0,
+      Math.round((nowMs - (stable.premiumUpdatedAt ?? nowMs)) / 1000)
+    );
+    console.warn(
+      `[signals] Reusing cached live premium for ${symbol} (${ageSec}s old)`
+    );
+  }
+
+  const hasFullSignalContext = Boolean(technicalIndicators && advancedFilters);
+
+  const previousStable = signalStabilityCache.get(stabilityKey);
+  signalStabilityCache.set(stabilityKey, {
+    ...(previousStable ?? {}),
+    stickyExpiry: matchedExpiry || previousStable?.stickyExpiry,
+    stickyExpiryDateKey: istDateKey,
+    technicalIndicators:
+      technicalIndicators ?? previousStable?.technicalIndicators,
+    advancedFilters: advancedFilters ?? previousStable?.advancedFilters,
+    indicatorsUpdatedAt: hasFullSignalContext && !usedCachedIndicators
+      ? nowMs
+      : previousStable?.indicatorsUpdatedAt,
+    optionPremium: realOptionPremium ?? previousStable?.optionPremium,
+    optionSymbol: optionSymbolName || previousStable?.optionSymbol,
+    optionStrike:
+      signal.optionsAdvisor?.strike ?? previousStable?.optionStrike,
+    optionSide: signal.optionsAdvisor?.side ?? previousStable?.optionSide,
+    premiumUpdatedAt:
+      optionPremiumSource === "live"
+        ? nowMs
+        : previousStable?.premiumUpdatedAt,
+  });
 
   console.log("[signals] Angel One result:", {
     symbol,
@@ -847,6 +968,9 @@ async function getSignalsFromAngelOne(
     matchedExpiry,
     optionSymbol: optionSymbolName || "none",
     realPremium: realOptionPremium ?? "estimated",
+    premiumSource: optionPremiumSource,
+    fullSignalContext: hasFullSignalContext,
+    usedCachedIndicators,
     greeksCount: greeksData.length,
     oiTableCount: oiTable.length,
   });
@@ -860,6 +984,8 @@ async function getSignalsFromAngelOne(
     pcrSymbol: pcrItem.tradingSymbol,
     expiry: matchedExpiry || getExpiryCandidates(segment.expiryDay)[0] || "",
     optionSymbol: optionSymbolName || "",
+    optionPremiumSource,
+    hasFullSignalContext,
     maxPain: greeksMaxPain.length > 0 ? greeksMaxPain : [{ strike: maxPainStrike, totalPayout: 0 }],
     oiTable: oiTable.length > 0 ? oiTable : undefined,
     oiBuildupLong,
@@ -882,7 +1008,8 @@ async function resolveSignalsData(
   segment: (typeof SEGMENTS)[number],
   symbol: SegmentId,
   apiKey?: string,
-  jwtToken?: string
+  jwtToken?: string,
+  authScope = "public"
 ) {
   if (!isMarketOpen()) {
     return {
@@ -908,7 +1035,7 @@ async function resolveSignalsData(
 
   if (apiKey && jwtToken) {
     try {
-      return await getSignalsFromAngelOne(jwtToken, apiKey, symbol);
+      return await getSignalsFromAngelOne(jwtToken, apiKey, symbol, authScope);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unknown error";
       console.error("[signals] Angel One error:", message);
@@ -990,7 +1117,13 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  const requestPromise = resolveSignalsData(segment, symbol, apiKey, jwtToken);
+  const requestPromise = resolveSignalsData(
+    segment,
+    symbol,
+    apiKey,
+    jwtToken,
+    cacheAuthScope
+  );
   inFlightSignals.set(cacheKey, requestPromise);
 
   try {

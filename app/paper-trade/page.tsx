@@ -42,6 +42,8 @@ const MAX_OPEN_TRADES_PER_SEGMENT = 1;
 const MIN_SIGNAL_CONFIDENCE = 60;
 const MIN_SIGNAL_STRENGTH_FLOOR = 4;
 const MIN_SIGNAL_STRENGTH_RATIO = 0.65;
+const REQUIRE_LIVE_PREMIUM_FOR_ENTRY = true;
+const REQUIRE_FULL_SIGNAL_CONTEXT_FOR_ENTRY = true;
 const DAILY_LOSS_LIMIT = -3000;
 const LOSS_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_DAILY_TRADES = 8;
@@ -127,6 +129,8 @@ function saveSettings(s: Settings) {
 interface LiveQuote {
   segment: SegmentId; ltp: number; bias: string; optionStrike?: number; optionSide?: string;
   optionPremium?: number; optionDelta?: number; expiry?: string;
+  optionPremiumSource?: "live" | "estimated" | "cached_live";
+  hasFullSignalContext?: boolean;
   confidence?: number; signalStrengthScore?: number; signalStrengthMax?: number;
   signalExpired?: boolean; alternateBlocked?: boolean; alternateReason?: string;
   isChoppy?: boolean;
@@ -305,6 +309,8 @@ export default function PaperTradePage() {
         confidence: json.signal?.confidence ?? 0,
         signalStrengthScore: json.signal?.signalStrength?.score ?? 0,
         signalStrengthMax: json.signal?.signalStrength?.max ?? 0,
+        optionPremiumSource: json.optionPremiumSource,
+        hasFullSignalContext: Boolean(json.hasFullSignalContext),
         signalExpired: Boolean(json.signal?.signalExpired),
         alternateBlocked: Boolean(json.signal?.alternateBlocked),
         alternateReason: json.signal?.alternateReason,
@@ -373,6 +379,12 @@ export default function PaperTradePage() {
     if (!entryWindowOpen) reasons.push(entryWindowMessage);
     if (!q?.optionStrike || !q.optionPremium || !q.optionTargets) {
       reasons.push("No actionable option signal available yet.");
+    }
+    if (REQUIRE_LIVE_PREMIUM_FOR_ENTRY && q?.optionPremiumSource !== "live") {
+      reasons.push("Live option premium unavailable; waiting for fresh option quote.");
+    }
+    if (REQUIRE_FULL_SIGNAL_CONTEXT_FOR_ENTRY && !q?.hasFullSignalContext) {
+      reasons.push("Full indicator confirmation unavailable; waiting for stable signal context.");
     }
     if (q?.optionSide === "BALANCED") {
       reasons.push("Signal is balanced. Wait for directional confirmation.");

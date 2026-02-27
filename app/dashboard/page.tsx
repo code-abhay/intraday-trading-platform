@@ -53,7 +53,7 @@ interface OITableRow { strike: number; ceOI: number; peOI: number; ceIV?: number
 interface OIBuildupItem { symbol: string; oiChange: number; priceChange: number; }
 interface MarketData { todayOpen: number; todayHigh: number; todayLow: number; prevClose: number; tradeVolume: number; buyQty: number; sellQty: number; }
 interface TechIndicatorsUI { emaFast: number; emaSlow: number; emaTrend: string; rsiValue: number; rsiSignal: string; macdLine: number; macdSignal: number; macdHist: number; macdBias: string; vwap: number; vwapBias: string; adxProxy: number; trendStrength: string; }
-interface SignalsResponse { source?: "angel_one" | "nse" | "demo"; symbol: string; underlyingValue: number; signal: Signal; rawPCR?: number; pcrSymbol?: string; expiry?: string; optionSymbol?: string; maxPain: { strike: number; totalPayout: number }[]; oiTable?: OITableRow[]; oiBuildupLong?: OIBuildupItem[]; oiBuildupShort?: OIBuildupItem[]; marketData?: MarketData; technicalIndicators?: TechIndicatorsUI; timestamp: string; }
+interface SignalsResponse { source?: "angel_one" | "nse" | "demo"; symbol: string; underlyingValue: number; signal: Signal; rawPCR?: number; pcrSymbol?: string; expiry?: string; optionSymbol?: string; optionPremiumSource?: "live" | "estimated" | "cached_live"; hasFullSignalContext?: boolean; maxPain: { strike: number; totalPayout: number }[]; oiTable?: OITableRow[]; oiBuildupLong?: OIBuildupItem[]; oiBuildupShort?: OIBuildupItem[]; marketData?: MarketData; technicalIndicators?: TechIndicatorsUI; timestamp: string; }
 
 function buildAiKey(resp: SignalsResponse | null): string {
   if (!resp || !resp.signal || resp.signal.bias === "NEUTRAL") return "";
@@ -271,6 +271,12 @@ export default function Home() {
   const sig = data?.signal;
   const isIndex = data?.source === "angel_one" && data?.marketData?.tradeVolume === 0;
   const changePercent = data?.marketData ? (((data.underlyingValue - data.marketData.prevClose) / data.marketData.prevClose) * 100) : null;
+  const premiumSourceLabel =
+    data?.optionPremiumSource === "live"
+      ? "(Live)"
+      : data?.optionPremiumSource === "cached_live"
+        ? "(Cached)"
+        : "(est.)";
 
   return (
     <>
@@ -406,6 +412,11 @@ export default function Home() {
               </CardHeader>
               <CardContent>
                 <p className="text-sm text-zinc-300 leading-relaxed">{data ? data.signal.summary : "Loading..."}</p>
+                {data?.hasFullSignalContext === false && (
+                  <p className="text-xs text-amber-300 mt-2">
+                    Partial data mode: waiting for full candle/filter confirmations.
+                  </p>
+                )}
 
                 {sig.bias !== "NEUTRAL" && sig.optionsAdvisor && (
                   <div className="mt-4 rounded-lg bg-zinc-800/50 p-4">
@@ -422,7 +433,7 @@ export default function Home() {
                         <p className="text-xs text-zinc-500">{sig.optionsAdvisor.moneyness}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-zinc-500">Premium {data?.optionSymbol ? "(Live)" : "(est.)"}</p>
+                        <p className="text-xs text-zinc-500">Premium {premiumSourceLabel}</p>
                         <p className="text-xl font-bold text-zinc-100">₹{sig.optionsAdvisor.premium}</p>
                         <p className="text-xs text-zinc-500">Delta: {sig.optionsAdvisor.delta.toFixed(3)}</p>
                       </div>
