@@ -5,6 +5,7 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 import {
   Activity,
+  BarChart3,
   LayoutDashboard,
   LineChart,
   Link2,
@@ -22,6 +23,7 @@ interface SidebarProps {
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
   { href: "/intraday-sheet", label: "Intraday Sheet", icon: Activity },
+  { href: "/alpha-sheet", label: "Alpha Sheet", icon: BarChart3 },
   { href: "/paper-trade", label: "Paper Trade", icon: LineChart },
   { href: "/login", label: "Angel One", icon: Link2 },
 ];
