@@ -109,7 +109,7 @@ export const SEGMENTS: SegmentConfig[] = [
     id: "SENSEX",
     label: "SENSEX",
     nseSymbol: "",
-    angelToken: "99926037",
+    angelToken: "99919000",
     angelSymbol: "SENSEX",
     angelPCRFilter: (s) => s.toUpperCase().includes("SENSEX"),
     exchange: "BSE",
@@ -134,7 +134,7 @@ export const SEGMENTS: SegmentConfig[] = [
     id: "MIDCPNIFTY",
     label: "Nifty Midcap",
     nseSymbol: "MIDCPNIFTY",
-    angelToken: "99926010",
+    angelToken: "99926074",
     angelSymbol: "MIDCPNIFTY",
     angelPCRFilter: (s) => {
       const u = s.toUpperCase();
