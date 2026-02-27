@@ -34,10 +34,18 @@ interface StrategyLabResponse {
   from: string;
   to: string;
   days: number;
+  pageSize?: number;
   segments: {
     segment: SegmentId;
     evaluations: StrategyEvaluation[];
     bestStrategy: StrategyEvaluation | null;
+    diagnostics: {
+      candleRowsFetched: number;
+      snapshotRowsFetched: number;
+      oiRowsFetched: number;
+      oiPointsMapped: number;
+      oiPagesFetched: number;
+    };
   }[];
   overallRanking: StrategyEvaluation[];
   warnings: string[];
@@ -199,6 +207,7 @@ export default function StrategyLabPage() {
             {data && (
               <p className="text-xs text-zinc-500">
                 Window: {formatDateRange(data.from, data.to)} ({data.days} days)
+                {typeof data.pageSize === "number" ? ` • Page size: ${data.pageSize}` : ""}
               </p>
             )}
           </CardContent>
@@ -352,6 +361,17 @@ export default function StrategyLabPage() {
                           <span>Net R: {formatNumber(best.kpis.netR, 2)}</span>
                           <span>•</span>
                           <span>PF: {formatNumber(best.kpis.profitFactor, 2)}</span>
+                        </div>
+                        <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-zinc-500">
+                          <span>Candles: {formatNumber(segmentSummary.diagnostics.candleRowsFetched, 0)}</span>
+                          <span>•</span>
+                          <span>Snapshots: {formatNumber(segmentSummary.diagnostics.snapshotRowsFetched, 0)}</span>
+                          <span>•</span>
+                          <span>OI Rows: {formatNumber(segmentSummary.diagnostics.oiRowsFetched, 0)}</span>
+                          <span>•</span>
+                          <span>OI Points: {formatNumber(segmentSummary.diagnostics.oiPointsMapped, 0)}</span>
+                          <span>•</span>
+                          <span>OI Pages: {formatNumber(segmentSummary.diagnostics.oiPagesFetched, 0)}</span>
                         </div>
                       </>
                     )}

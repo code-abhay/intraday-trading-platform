@@ -129,21 +129,32 @@ async function fetchOiPoints(
   segment: SegmentId,
   fromIso: string,
   toIso: string
-): Promise<LabOIBuildupPoint[]> {
+): Promise<{ points: LabOIBuildupPoint[]; rowCount: number; pageCount: number }> {
   const sb = getSupabaseAdmin();
-  if (!sb) return [];
-  const { data, error } = await sb
-    .from("market_oi_buildup")
-    .select("snapshot_at, bucket, oi_change")
-    .eq("segment", segment)
-    .gte("snapshot_at", fromIso)
-    .lte("snapshot_at", toIso)
-    .order("snapshot_at", { ascending: true });
+  if (!sb) return { points: [], rowCount: 0, pageCount: 0 };
+  const rows: Record<string, unknown>[] = [];
+  let offset = 0;
+  let pageCount = 0;
+  while (true) {
+    const { data, error } = await sb
+      .from("market_oi_buildup")
+      .select("snapshot_at, bucket, oi_change")
+      .eq("segment", segment)
+      .gte("snapshot_at", fromIso)
+      .lte("snapshot_at", toIso)
+      .order("snapshot_at", { ascending: true })
+      .range(offset, offset + PAGE_SIZE - 1);
 
-  if (error) throw new Error(`Failed to load OI buildup for ${segment}: ${error.message}`);
+    if (error) throw new Error(`Failed to load OI buildup for ${segment}: ${error.message}`);
+    const chunk = (data ?? []) as Record<string, unknown>[];
+    rows.push(...chunk);
+    pageCount += 1;
+    if (chunk.length < PAGE_SIZE) break;
+    offset += PAGE_SIZE;
+  }
 
   const bucketed = new Map<string, { longOiChange: number; shortOiChange: number }>();
-  for (const row of (data ?? []) as Record<string, unknown>[]) {
+  for (const row of rows) {
     const time = String(row.snapshot_at ?? "");
     if (!time) continue;
     const bucket = String(row.bucket ?? "").toUpperCase();
@@ -156,13 +167,14 @@ async function fetchOiPoints(
     if (bucket === "SHORT") current.shortOiChange += oiChange;
   }
 
-  return Array.from(bucketed.entries())
+  const points = Array.from(bucketed.entries())
     .sort(([a], [b]) => new Date(a).getTime() - new Date(b).getTime())
     .map(([time, value]) => ({
       time,
       longOiChange: value.longOiChange,
       shortOiChange: value.shortOiChange,
     }));
+  return { points, rowCount: rows.length, pageCount };
 }
 
 function validateEvaluations(
@@ -236,19 +248,32 @@ export async function GET(request: NextRequest) {
     segment: SegmentId;
     evaluations: ReturnType<typeof evaluateStrategiesForSegment>;
     bestStrategy: ReturnType<typeof evaluateStrategiesForSegment>[number] | null;
+    diagnostics: {
+      candleRowsFetched: number;
+      snapshotRowsFetched: number;
+      oiRowsFetched: number;
+      oiPointsMapped: number;
+      oiPagesFetched: number;
+    };
   }> = [];
 
   for (const segment of segments) {
     try {
-      const [candles, snapshots, oiPoints] = await Promise.all([
+      const [candles, snapshots, oiFetch] = await Promise.all([
         fetchCandles(segment, fromIso, toIso),
         fetchSnapshots(segment, fromIso, toIso),
         fetchOiPoints(segment, fromIso, toIso),
       ]);
+      const oiPoints = oiFetch.points;
 
       if (candles.length < 200) {
         warnings.push(
           `${segment}: limited one-minute candle data (${candles.length} rows) in selected range.`
+        );
+      }
+      if (oiFetch.rowCount >= PAGE_SIZE) {
+        warnings.push(
+          `${segment}: fetched ${oiFetch.rowCount} OI rows across ${oiFetch.pageCount} pages.`
         );
       }
 
@@ -265,6 +290,13 @@ export async function GET(request: NextRequest) {
         segment,
         evaluations,
         bestStrategy: evaluations[0] ?? null,
+        diagnostics: {
+          candleRowsFetched: candles.length,
+          snapshotRowsFetched: snapshots.length,
+          oiRowsFetched: oiFetch.rowCount,
+          oiPointsMapped: oiPoints.length,
+          oiPagesFetched: oiFetch.pageCount,
+        },
       });
     } catch (error) {
       warnings.push(
@@ -274,6 +306,13 @@ export async function GET(request: NextRequest) {
         segment,
         evaluations: [],
         bestStrategy: null,
+        diagnostics: {
+          candleRowsFetched: 0,
+          snapshotRowsFetched: 0,
+          oiRowsFetched: 0,
+          oiPointsMapped: 0,
+          oiPagesFetched: 0,
+        },
       });
     }
   }
@@ -287,6 +326,7 @@ export async function GET(request: NextRequest) {
     from: fromIso,
     to: toIso,
     days,
+    pageSize: PAGE_SIZE,
     segments: segmentSummaries,
     overallRanking,
     warnings,
