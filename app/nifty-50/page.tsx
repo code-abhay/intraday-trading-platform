@@ -271,8 +271,12 @@ export default function Nifty50Page() {
               <Table>
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead className="min-w-14 whitespace-nowrap">Row</TableHead>
-                    <TableHead className="min-w-40 whitespace-nowrap">Symbol</TableHead>
+                    <TableHead className="w-14 min-w-14 whitespace-nowrap sticky left-0 z-30 bg-zinc-950 border-r border-zinc-800">
+                      Row
+                    </TableHead>
+                    <TableHead className="min-w-40 whitespace-nowrap sticky left-14 z-30 bg-zinc-950 border-r border-zinc-800 shadow-[2px_0_0_0_rgba(39,39,42,0.6)]">
+                      Symbol
+                    </TableHead>
                     <TableHead className="text-right min-w-24 whitespace-nowrap">LTP</TableHead>
                     <TableHead className="text-right min-w-24 whitespace-nowrap">Open</TableHead>
                     <TableHead className="text-right min-w-24 whitespace-nowrap">High</TableHead>
@@ -296,11 +300,23 @@ export default function Nifty50Page() {
                           : row.breakdown === true
                             ? "bg-red-500/5"
                             : "";
+                      const stickyRowBg =
+                        row.breakout === true
+                          ? "bg-emerald-500/5"
+                          : row.breakdown === true
+                            ? "bg-red-500/5"
+                            : "bg-zinc-950";
 
                       return (
                         <TableRow key={row.symbol} className={rowClass}>
-                          <TableCell className="tabular-nums">{index + 1}</TableCell>
-                          <TableCell className="font-medium whitespace-nowrap">
+                          <TableCell
+                            className={`tabular-nums w-14 min-w-14 sticky left-0 z-20 border-r border-zinc-800 ${stickyRowBg}`}
+                          >
+                            {index + 1}
+                          </TableCell>
+                          <TableCell
+                            className={`font-medium whitespace-nowrap sticky left-14 z-20 border-r border-zinc-800 shadow-[2px_0_0_0_rgba(39,39,42,0.6)] ${stickyRowBg}`}
+                          >
                             <div className="flex items-center gap-2">
                               <span>{row.symbol}</span>
                               {row.quoteStatus === "unavailable" ? (

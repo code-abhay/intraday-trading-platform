@@ -258,7 +258,9 @@ export default function IntradaySheetPage() {
               <Table className="min-w-[1750px]">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead className="min-w-40 whitespace-nowrap">Symbol</TableHead>
+                    <TableHead className="min-w-40 whitespace-nowrap sticky left-0 z-30 bg-zinc-950 border-r border-zinc-800 shadow-[2px_0_0_0_rgba(39,39,42,0.6)]">
+                      Symbol
+                    </TableHead>
                     <TableHead className="text-right min-w-24 whitespace-nowrap">Price</TableHead>
                     <TableHead className="text-right min-w-24 whitespace-nowrap">Open</TableHead>
                     <TableHead className="text-right min-w-24 whitespace-nowrap">High</TableHead>
@@ -289,10 +291,18 @@ export default function IntradaySheetPage() {
                           : row.breakdown === true
                             ? "bg-red-500/5"
                             : "";
+                      const stickySymbolBg =
+                        row.breakout === true
+                          ? "bg-emerald-500/5"
+                          : row.breakdown === true
+                            ? "bg-red-500/5"
+                            : "bg-zinc-950";
 
                       return (
                         <TableRow key={row.symbol} className={rowClass}>
-                          <TableCell className="font-medium whitespace-nowrap">
+                          <TableCell
+                            className={`font-medium whitespace-nowrap sticky left-0 z-20 border-r border-zinc-800 shadow-[2px_0_0_0_rgba(39,39,42,0.6)] ${stickySymbolBg}`}
+                          >
                             <div className="flex items-center gap-2">
                               <span>{row.symbol}</span>
                               {row.quoteStatus === "unavailable" ? (
