@@ -130,7 +130,6 @@ export default function IntradaySheetPage() {
   const [data, setData] = useState<IntradaySheetResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mobileOpen, setMobileOpen] = useState(false);
 
   const fetchSheet = useCallback(async (force = false) => {
     try {
@@ -147,6 +146,7 @@ export default function IntradaySheetPage() {
     } catch (fetchError) {
       const message =
         fetchError instanceof Error ? fetchError.message : "Failed to fetch intraday sheet";
+      setData(null);
       setError(message);
     } finally {
       setLoading(false);
@@ -165,7 +165,7 @@ export default function IntradaySheetPage() {
 
   return (
     <>
-      <AppHeader onMobileMenuOpen={() => setMobileOpen(!mobileOpen)}>
+      <AppHeader>
         <div className="flex items-center gap-2">
           <Activity className="size-4 text-emerald-400" />
           <span className="text-sm font-semibold text-zinc-200">

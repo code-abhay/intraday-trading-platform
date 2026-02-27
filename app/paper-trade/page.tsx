@@ -507,7 +507,7 @@ export default function PaperTradePage() {
 
   return (
     <>
-      <AppHeader onMobileMenuOpen={() => {}}>
+      <AppHeader>
         <SegmentSelector
           segments={SEGMENTS.map((s) => ({ id: s.id, label: `${s.label} (${s.lotSize})` }))}
           active={activeSegment}

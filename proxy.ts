@@ -38,7 +38,14 @@ export function proxy(req: NextRequest) {
     return NextResponse.next();
   }
 
-  const sitePassword = process.env.SITE_PASSWORD || "admin123";
+  const configuredPassword = process.env.SITE_PASSWORD?.trim();
+  const sitePassword =
+    configuredPassword || (process.env.NODE_ENV !== "production" ? "admin123" : null);
+  if (!sitePassword) {
+    const loginUrl = new URL("/auth", req.url);
+    loginUrl.searchParams.set("error", "config_missing_password");
+    return NextResponse.redirect(loginUrl);
+  }
   const expectedToken = hashToken(sitePassword);
   const authCookie = req.cookies.get("site_auth")?.value;
 

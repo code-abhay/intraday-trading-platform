@@ -328,15 +328,18 @@ async function fetchQuotesInBatches(
 }
 
 function toQuote(raw: {
-  ltp?: number;
-  open?: number;
-  high?: number;
-  low?: number;
-  close?: number;
-  percentChange?: number;
+  ltp?: number | string;
+  open?: number | string;
+  high?: number | string;
+  low?: number | string;
+  close?: number | string;
+  percentChange?: number | string;
 }): IntradayQuote {
-  const asFinite = (value: number | undefined) =>
-    value != null && Number.isFinite(value) ? value : null;
+  const asFinite = (value: number | string | undefined) => {
+    if (value == null) return null;
+    const parsed = typeof value === "string" ? Number.parseFloat(value) : value;
+    return Number.isFinite(parsed) ? parsed : null;
+  };
 
   return {
     price: asFinite(raw.ltp),

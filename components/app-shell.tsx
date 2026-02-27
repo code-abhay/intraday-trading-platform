@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Sidebar } from "@/components/sidebar";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
+import { MobileMenuProvider } from "@/components/mobile-menu-context";
 
 const NO_SHELL_PATHS = ["/auth", "/terms", "/privacy", "/disclaimer"];
 
@@ -54,46 +55,56 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
 
+  const mobileMenuContextValue = {
+    openMobileMenu: () => setMobileOpen(true),
+    closeMobileMenu: () => setMobileOpen(false),
+    toggleMobileMenu: () => setMobileOpen((prev) => !prev),
+  };
+
   useEffect(() => {
     setMobileOpen(false);
   }, [pathname]);
 
   if (isShellless) {
     return (
-      <div className="min-h-screen flex flex-col bg-zinc-950">
-        <main className="flex-1 flex flex-col">{children}</main>
-        <Footer />
-      </div>
+      <MobileMenuProvider value={mobileMenuContextValue}>
+        <div className="min-h-screen flex flex-col bg-zinc-950">
+          <main className="flex-1 flex flex-col">{children}</main>
+          <Footer />
+        </div>
+      </MobileMenuProvider>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-950">
-      <div className="flex-1 flex">
-        {/* Desktop Sidebar */}
-        <div className="hidden lg:block">
-          <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
+    <MobileMenuProvider value={mobileMenuContextValue}>
+      <div className="min-h-screen flex flex-col bg-zinc-950">
+        <div className="flex-1 flex">
+          {/* Desktop Sidebar */}
+          <div className="hidden lg:block">
+            <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
+          </div>
+
+          {/* Mobile Sidebar */}
+          <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
+            <SheetContent side="left" className="p-0 w-60">
+              <Sidebar collapsed={false} onToggle={() => setMobileOpen(false)} />
+            </SheetContent>
+          </Sheet>
+
+          {/* Main Content */}
+          <div
+            className={cn(
+              "flex-1 flex flex-col transition-all duration-300",
+              collapsed ? "lg:ml-16" : "lg:ml-60"
+            )}
+          >
+            <div className="flex-1">{children}</div>
+          </div>
         </div>
 
-        {/* Mobile Sidebar */}
-        <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
-          <SheetContent side="left" className="p-0 w-60">
-            <Sidebar collapsed={false} onToggle={() => setMobileOpen(false)} />
-          </SheetContent>
-        </Sheet>
-
-        {/* Main Content */}
-        <div
-          className={cn(
-            "flex-1 flex flex-col transition-all duration-300",
-            collapsed ? "lg:ml-16" : "lg:ml-60"
-          )}
-        >
-          <div className="flex-1">{children}</div>
-        </div>
+        <Footer />
       </div>
-
-      <Footer />
-    </div>
+    </MobileMenuProvider>
   );
 }

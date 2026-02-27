@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-function getPassword(): string {
-  return process.env.SITE_PASSWORD || "admin123";
+function getPassword(): string | null {
+  const configuredPassword = process.env.SITE_PASSWORD?.trim();
+  if (configuredPassword) return configuredPassword;
+  if (process.env.NODE_ENV !== "production") return "admin123";
+  return null;
 }
 
 function hashToken(password: string): string {
@@ -25,6 +28,12 @@ export async function POST(req: NextRequest) {
     }
 
     const sitePassword = getPassword();
+    if (!sitePassword) {
+      return NextResponse.json(
+        { error: "SITE_PASSWORD is not configured on server" },
+        { status: 503 }
+      );
+    }
 
     if (password !== sitePassword) {
       return NextResponse.json({ error: "Invalid password" }, { status: 401 });

@@ -35,7 +35,6 @@ export async function GET(request: NextRequest) {
     auth: {
       apiKeySet: !!apiKey,
       jwtTokenSet: !!jwtToken,
-      jwtTokenPreview: jwtToken ? `${jwtToken.substring(0, 20)}...` : null,
     },
   };
 

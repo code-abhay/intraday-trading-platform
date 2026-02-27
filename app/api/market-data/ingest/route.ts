@@ -15,16 +15,20 @@ function isValidSegment(segment?: string): segment is SegmentId {
 }
 
 function isIngestionAuthorized(request: NextRequest, hasJwtToken: boolean): boolean {
-  const secret = process.env.INGEST_CRON_SECRET ?? process.env.CRON_SECRET;
-  if (!secret) return true;
+  const secret = (process.env.INGEST_CRON_SECRET ?? process.env.CRON_SECRET)?.trim();
   const authHeader = request.headers.get("authorization") ?? "";
   const bearerToken = authHeader.startsWith("Bearer ")
     ? authHeader.slice("Bearer ".length).trim()
     : "";
-  const providedSecret =
-    request.headers.get(INGEST_SECRET_HEADER) ??
-    request.nextUrl.searchParams.get("secret");
-  if (providedSecret === secret || bearerToken === secret) return true;
+  const headerSecret = request.headers.get(INGEST_SECRET_HEADER)?.trim();
+  const querySecret = request.nextUrl.searchParams.get("secret")?.trim();
+
+  // No shared secret configured: keep local/dev behavior permissive, but require auth in production.
+  if (!secret) {
+    return process.env.NODE_ENV !== "production" || hasJwtToken;
+  }
+
+  if (headerSecret === secret || querySecret === secret || bearerToken === secret) return true;
   return hasJwtToken;
 }
 

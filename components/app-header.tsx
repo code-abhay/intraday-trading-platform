@@ -3,20 +3,31 @@
 import { cn } from "@/lib/utils";
 import { Menu } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { useMobileMenu } from "@/components/mobile-menu-context";
 
 interface AppHeaderProps {
-  onMobileMenuOpen: () => void;
+  onMobileMenuOpen?: () => void;
   children?: React.ReactNode;
 }
 
 export function AppHeader({ onMobileMenuOpen, children }: AppHeaderProps) {
+  const mobileMenu = useMobileMenu();
+
+  const handleMobileMenuOpen = () => {
+    if (onMobileMenuOpen) {
+      onMobileMenuOpen();
+      return;
+    }
+    mobileMenu?.openMobileMenu();
+  };
+
   return (
     <header className="sticky top-0 z-30 flex h-14 items-center gap-4 border-b border-zinc-800 bg-zinc-950/80 backdrop-blur-md px-4 lg:px-6">
       <Button
         variant="ghost"
         size="icon"
         className="lg:hidden"
-        onClick={onMobileMenuOpen}
+        onClick={handleMobileMenuOpen}
       >
         <Menu className="size-5" />
       </Button>

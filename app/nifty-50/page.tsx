@@ -107,7 +107,6 @@ export default function Nifty50Page() {
   const [data, setData] = useState<AlphaSheetResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mobileOpen, setMobileOpen] = useState(false);
 
   const fetchSheet = useCallback(async (force = false) => {
     try {
@@ -124,6 +123,7 @@ export default function Nifty50Page() {
     } catch (fetchError) {
       const message =
         fetchError instanceof Error ? fetchError.message : "Failed to fetch Nifty 50 data";
+      setData(null);
       setError(message);
     } finally {
       setLoading(false);
@@ -142,7 +142,7 @@ export default function Nifty50Page() {
 
   return (
     <>
-      <AppHeader onMobileMenuOpen={() => setMobileOpen(!mobileOpen)}>
+      <AppHeader>
         <div className="flex items-center gap-2">
           <Activity className="size-4 text-emerald-400" />
           <span className="text-sm font-semibold text-zinc-200">Nifty 50</span>

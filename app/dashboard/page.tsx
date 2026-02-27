@@ -75,7 +75,6 @@ export default function Home() {
   const [data, setData] = useState<SignalsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [mobileOpen, setMobileOpen] = useState(false);
   const [marketOpen, setMarketOpen] = useState(() => isMarketOpen());
   const lastBiasRef = useRef<string>("");
   const [notifyEnabled, setNotifyEnabled] = useState<boolean | null>(null);
@@ -281,7 +280,7 @@ export default function Home() {
   return (
     <>
       {/* Header */}
-      <AppHeader onMobileMenuOpen={() => setMobileOpen(!mobileOpen)}>
+      <AppHeader>
         <SegmentSelector
           segments={SEGMENTS.map((s) => ({ id: s.id, label: s.label }))}
           active={segment}
