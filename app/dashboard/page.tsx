@@ -55,6 +55,12 @@ interface MarketData { todayOpen: number; todayHigh: number; todayLow: number; p
 interface TechIndicatorsUI { emaFast: number; emaSlow: number; emaTrend: string; rsiValue: number; rsiSignal: string; macdLine: number; macdSignal: number; macdHist: number; macdBias: string; vwap: number; vwapBias: string; adxProxy: number; trendStrength: string; }
 interface SignalsResponse { source?: "angel_one" | "nse" | "demo"; symbol: string; underlyingValue: number; signal: Signal; rawPCR?: number; pcrSymbol?: string; expiry?: string; optionSymbol?: string; maxPain: { strike: number; totalPayout: number }[]; oiTable?: OITableRow[]; oiBuildupLong?: OIBuildupItem[]; oiBuildupShort?: OIBuildupItem[]; marketData?: MarketData; technicalIndicators?: TechIndicatorsUI; timestamp: string; }
 
+function buildAiKey(resp: SignalsResponse | null): string {
+  if (!resp || !resp.signal || resp.signal.bias === "NEUTRAL") return "";
+  const roundedLtp = Math.round(resp.underlyingValue / 10) * 10;
+  return `${resp.symbol}_${resp.signal.bias}_${roundedLtp}`;
+}
+
 function formatNum(n: number): string {
   if (n >= 1_00_00_000) return `${(n / 1_00_00_000).toFixed(2)} Cr`;
   if (n >= 1_00_000) return `${(n / 1_00_000).toFixed(2)} L`;
@@ -79,6 +85,8 @@ export default function Home() {
     reasoning: string; keyFactors: string[]; caution: string | null;
     adjustedSL: number | null; adjustedT1: number | null;
   } | null>(null);
+  const [aiAnalysisKey, setAiAnalysisKey] = useState("");
+  const [aiError, setAiError] = useState<string | null>(null);
   const [aiLoading, setAiLoading] = useState(false);
 
   useEffect(() => {
@@ -89,8 +97,17 @@ export default function Home() {
   const fetchAiAnalysis = useCallback(async (resp: SignalsResponse) => {
     if (!aiEnabled) return;
     const sig = resp.signal;
-    if (!sig || sig.bias === "NEUTRAL") { setAiAnalysis(null); return; }
+    if (!sig || sig.bias === "NEUTRAL") {
+      setAiAnalysis(null);
+      setAiAnalysisKey("");
+      setAiError(null);
+      return;
+    }
+
+    const aiKey = buildAiKey(resp);
+
     setAiLoading(true);
+    setAiError(null);
     try {
       const res = await fetch("/api/ai-analyze", {
         method: "POST",
@@ -149,10 +166,32 @@ export default function Home() {
         }),
       });
       const json = await res.json();
-      if (json.analysis) setAiAnalysis(json.analysis);
-    } catch {}
+      if (json.analysis) {
+        setAiAnalysis(json.analysis);
+        setAiAnalysisKey(aiKey);
+        setAiError(null);
+      } else if (!json.cached) {
+        setAiAnalysis(null);
+        setAiAnalysisKey("");
+      }
+
+      if (json.error) {
+        const retryText =
+          typeof json.retryAfterSec === "number"
+            ? ` Retry in ${json.retryAfterSec}s.`
+            : "";
+        setAiError(`${json.error}${retryText}`);
+      }
+    } catch {
+      setAiError("AI request failed. Please try again.");
+    }
     finally { setAiLoading(false); }
   }, [aiEnabled]);
+
+  const runAiAdvisory = useCallback(() => {
+    if (!data) return;
+    void fetchAiAnalysis(data);
+  }, [data, fetchAiAnalysis]);
 
   const sendNotification = useCallback(async (resp: SignalsResponse) => {
     if (!notifyEnabled) return;
@@ -207,13 +246,17 @@ export default function Home() {
       const resp: SignalsResponse = await res.json();
       setData(resp);
       sendNotification(resp);
-      fetchAiAnalysis(resp);
+      if (buildAiKey(resp) !== aiAnalysisKey) {
+        setAiAnalysis(null);
+        setAiAnalysisKey("");
+        setAiError(null);
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to fetch");
     } finally {
       setLoading(false);
     }
-  }, [segment, sendNotification, fetchAiAnalysis]);
+  }, [segment, sendNotification, aiAnalysisKey]);
 
   useEffect(() => {
     if (!marketOpen) {
@@ -519,10 +562,20 @@ export default function Home() {
                   <Brain className="size-4 text-purple-400" />
                   AI Trade Advisor
                 </CardTitle>
-                <Badge variant="secondary" className="gap-1 text-[10px]">
-                  <Sparkles className="size-2.5" />
-                  Powered by AI
-                </Badge>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="gap-1 text-[10px]">
+                    <Sparkles className="size-2.5" />
+                    Manual AI
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={runAiAdvisory}
+                    disabled={aiLoading}
+                  >
+                    {aiLoading ? "Analyzing..." : aiAnalysis ? "Refresh AI" : "Get AI Advisory"}
+                  </Button>
+                </div>
               </div>
             </CardHeader>
             <CardContent>
@@ -603,7 +656,12 @@ export default function Home() {
                   )}
                 </div>
               ) : (
-                <p className="text-sm text-zinc-500 py-2">AI analysis unavailable. Will retry on next signal refresh.</p>
+                <p className="text-sm text-zinc-500 py-2">
+                  Click <span className="text-zinc-300">Get AI Advisory</span> when you want analysis for this signal.
+                </p>
+              )}
+              {aiError && (
+                <p className="text-xs text-amber-300 mt-3">{aiError}</p>
               )}
             </CardContent>
           </Card>
