@@ -9,8 +9,6 @@ import {
   ALPHA_Q1_QUANTITY,
   ALPHA_Q2_QUANTITY,
   ALPHA_RISK_RATE,
-  ALPHA_SIGNAL_END_ROW,
-  ALPHA_SIGNAL_START_ROW,
   ALPHA_TARGET_AMOUNT,
 } from "@/lib/alpha-sheet-config";
 
@@ -176,22 +174,14 @@ export function computeAlphaSheetTotals(rows: AlphaSheetRow[]): AlphaSheetTotals
   };
 }
 
-function getSignalWindow(rows: AlphaSheetRow[]): AlphaSheetRow[] {
-  return rows.filter(
-    (row) => row.sheetRow >= ALPHA_SIGNAL_START_ROW && row.sheetRow <= ALPHA_SIGNAL_END_ROW
-  );
-}
-
 export function computeAlphaSheetSummary(
   rows: AlphaSheetRow[],
   now: Date = new Date()
 ): AlphaSheetSummary {
-  const signalRows = getSignalWindow(rows);
-
-  const breakoutCount = signalRows.filter((row) => row.upSignal === "breakout").length;
-  const breakdownCount = signalRows.filter((row) => row.downSignal === "breakdown").length;
-  const sellingCount = signalRows.filter((row) => (row.change ?? 0) < 0).length;
-  const buyingCount = signalRows.filter((row) => (row.change ?? 0) > 0).length;
+  const breakoutCount = rows.filter((row) => row.upSignal === "breakout").length;
+  const breakdownCount = rows.filter((row) => row.downSignal === "breakdown").length;
+  const sellingCount = rows.filter((row) => (row.change ?? 0) < 0).length;
+  const buyingCount = rows.filter((row) => (row.change ?? 0) > 0).length;
   const bias: "Bullish" | "Bearish" = buyingCount > sellingCount ? "Bullish" : "Bearish";
   const netAdvance = buyingCount - sellingCount;
 

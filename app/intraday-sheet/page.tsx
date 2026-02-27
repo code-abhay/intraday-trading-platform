@@ -20,8 +20,6 @@ import {
   Clock,
   RefreshCw,
   Target,
-  TrendingDown,
-  TrendingUp,
   Wallet,
 } from "lucide-react";
 import { INTRADAY_POLL_INTERVAL_MS } from "@/lib/intraday-sheet-config";
@@ -97,7 +95,14 @@ function formatPercent(value: number | null): string {
   return `${formatNumber(value, 2)}%`;
 }
 
-function signalBadge(state: boolean | null, yesLabel: string, noLabel = "—") {
+type SignalBadgeVariant = "default" | "secondary" | "destructive" | "warning" | "outline";
+
+function signalBadge(
+  state: boolean | null,
+  yesLabel: string,
+  noLabel = "—",
+  yesVariant: SignalBadgeVariant = "default"
+) {
   if (state === null) {
     return (
       <Badge variant="secondary" className="text-xs">
@@ -108,7 +113,7 @@ function signalBadge(state: boolean | null, yesLabel: string, noLabel = "—") {
 
   if (state) {
     return (
-      <Badge variant="default" className="text-xs">
+      <Badge variant={yesVariant} className="text-xs">
         {yesLabel}
       </Badge>
     );
@@ -217,13 +222,23 @@ export default function IntradaySheetPage() {
         ) : null}
 
         {data && (
-          <div className="grid gap-3 grid-cols-2 lg:grid-cols-6">
+          <div className="grid gap-3 grid-cols-2 lg:grid-cols-8">
             <StatCard label="Capital" value={formatCurrency(data.globals.capital)} icon={Wallet} />
-            <StatCard label="Target (K56)" value={formatCurrency(data.globals.targetAmount)} icon={Target} />
-            <StatCard label="Gain (K57)" value={formatCurrency(data.globals.gainAmount)} subValue={formatPercent(data.globals.gainRatio * 100)} trend="up" />
-            <StatCard label="Monthly (K58)" value={formatCurrency(data.globals.monthlyProjection)} />
+            <StatCard label="Target Amount" value={formatCurrency(data.globals.targetAmount)} icon={Target} />
+            <StatCard label="Net Gain" value={formatCurrency(data.globals.gainAmount)} subValue={formatPercent(data.globals.gainRatio * 100)} trend="up" />
+            <StatCard label="Monthly Projection" value={formatCurrency(data.globals.monthlyProjection)} />
             <StatCard label="Resolved / Quoted" value={`${data.totals.resolvedCount} / ${data.totals.quotedCount}`} subValue={`${data.totals.unavailableCount} unavailable`} trend={data.totals.unavailableCount ? "down" : "neutral"} />
-            <StatCard label="Signals" value={`${data.totals.breakoutCount} / ${data.totals.breakdownCount}`} subValue={`${data.totals.watchBreakoutCount} watch`} trend={data.totals.breakoutCount >= data.totals.breakdownCount ? "up" : "down"} />
+            <StatCard label="Watch Rows" value={data.totals.watchBreakoutCount} subValue="watch breakout" trend="up" />
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 backdrop-blur-sm">
+              <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Breakout Rows</p>
+              <p className="mt-2 text-xl font-bold tabular-nums text-emerald-400">{data.totals.breakoutCount}</p>
+              <p className="mt-1 text-xs text-emerald-400">bullish triggers</p>
+            </div>
+            <div className="rounded-xl border border-zinc-800 bg-zinc-900/60 p-4 backdrop-blur-sm">
+              <p className="text-xs font-medium text-zinc-400 uppercase tracking-wider">Breakdown Rows</p>
+              <p className="mt-2 text-xl font-bold tabular-nums text-red-400">{data.totals.breakdownCount}</p>
+              <p className="mt-1 text-xs text-red-400">bearish triggers</p>
+            </div>
           </div>
         )}
 
@@ -240,29 +255,29 @@ export default function IntradaySheetPage() {
           </CardHeader>
           <CardContent>
             <div className="rounded-lg border border-zinc-800 overflow-auto">
-              <Table>
+              <Table className="min-w-[1750px]">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent">
-                    <TableHead>Symbol</TableHead>
-                    <TableHead className="text-right">Price</TableHead>
-                    <TableHead className="text-right">Open</TableHead>
-                    <TableHead className="text-right">High</TableHead>
-                    <TableHead className="text-right">Low</TableHead>
-                    <TableHead className="text-right">Prev Close</TableHead>
-                    <TableHead className="text-right">Change %</TableHead>
-                    <TableHead>Watch</TableHead>
-                    <TableHead>Breakout</TableHead>
-                    <TableHead>Breakdown</TableHead>
-                    <TableHead className="text-right">Buy Signal (L)</TableHead>
-                    <TableHead className="text-right">Sell Signal (M)</TableHead>
-                    <TableHead className="text-right">Buy (N)</TableHead>
-                    <TableHead className="text-right">Sell (O)</TableHead>
-                    <TableHead className="text-right">Target (P)</TableHead>
-                    <TableHead className="text-right">Shares (Q)</TableHead>
-                    <TableHead className="text-right">Profit (R)</TableHead>
-                    <TableHead className="text-right">CMP (S)</TableHead>
-                    <TableHead className="text-right">Value (T)</TableHead>
-                    <TableHead className="text-right">SL Delta (U)</TableHead>
+                    <TableHead className="min-w-40 whitespace-nowrap">Symbol</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Price</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Open</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">High</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Low</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Prev Close</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Change %</TableHead>
+                    <TableHead className="min-w-24 whitespace-nowrap">Watch</TableHead>
+                    <TableHead className="min-w-24 whitespace-nowrap">Breakout</TableHead>
+                    <TableHead className="min-w-24 whitespace-nowrap">Breakdown</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Buy Signal</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Sell Signal</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Buy</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Sell</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Target</TableHead>
+                    <TableHead className="text-right min-w-20 whitespace-nowrap">Shares</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Profit</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">CMP</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">Value</TableHead>
+                    <TableHead className="text-right min-w-24 whitespace-nowrap">SL Delta</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -277,7 +292,7 @@ export default function IntradaySheetPage() {
 
                       return (
                         <TableRow key={row.symbol} className={rowClass}>
-                          <TableCell className="font-medium">
+                          <TableCell className="font-medium whitespace-nowrap">
                             <div className="flex items-center gap-2">
                               <span>{row.symbol}</span>
                               {row.quoteStatus === "unavailable" ? (
@@ -287,12 +302,12 @@ export default function IntradaySheetPage() {
                               ) : null}
                             </div>
                           </TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.price)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.open)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.high)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.low)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.prevClose)}</TableCell>
-                          <TableCell className="text-right tabular-nums">
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.price)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.open)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.high)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.low)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.prevClose)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">
                             <span
                               className={
                                 row.changePct == null
@@ -306,18 +321,34 @@ export default function IntradaySheetPage() {
                             </span>
                           </TableCell>
                           <TableCell>{signalBadge(row.watchBreakout, "Watch")}</TableCell>
-                          <TableCell>{signalBadge(row.breakout, "Yes")}</TableCell>
-                          <TableCell>{signalBadge(row.breakdown, "Yes")}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.buySignal)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.sellSignal)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.buy)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.sell)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.targetPerShare)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{row.shares == null ? "N/A" : row.shares.toLocaleString("en-IN")}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.profit)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.cmp)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.value)}</TableCell>
-                          <TableCell className="text-right tabular-nums">{formatNumber(row.slDelta)}</TableCell>
+                          <TableCell>{signalBadge(row.breakout, "Breakout")}</TableCell>
+                          <TableCell>{signalBadge(row.breakdown, "Breakdown", "—", "destructive")}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">
+                            <span className={row.buySignal == null ? "text-zinc-500" : "text-emerald-400"}>
+                              {formatNumber(row.buySignal)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">
+                            <span className={row.sellSignal == null ? "text-zinc-500" : "text-red-400"}>
+                              {formatNumber(row.sellSignal)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">
+                            <span className={row.buy == null ? "text-zinc-500" : "text-emerald-400"}>
+                              {formatNumber(row.buy)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">
+                            <span className={row.sell == null ? "text-zinc-500" : "text-red-400"}>
+                              {formatNumber(row.sell)}
+                            </span>
+                          </TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.targetPerShare)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{row.shares == null ? "N/A" : row.shares.toLocaleString("en-IN")}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.profit)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.cmp)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.value)}</TableCell>
+                          <TableCell className="text-right tabular-nums whitespace-nowrap">{formatNumber(row.slDelta)}</TableCell>
                         </TableRow>
                       );
                     })
@@ -333,15 +364,6 @@ export default function IntradaySheetPage() {
             </div>
           </CardContent>
         </Card>
-
-        {data && (
-          <div className="flex items-center gap-3 text-xs text-zinc-500">
-            <TrendingUp className="size-3 text-emerald-400" />
-            <span>{data.totals.breakoutCount} breakout rows</span>
-            <TrendingDown className="size-3 text-red-400 ml-2" />
-            <span>{data.totals.breakdownCount} breakdown rows</span>
-          </div>
-        )}
       </main>
     </>
   );
