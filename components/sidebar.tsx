@@ -21,6 +21,7 @@ interface SidebarProps {
 
 const navItems = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/intraday-sheet", label: "Intraday Sheet", icon: Activity },
   { href: "/paper-trade", label: "Paper Trade", icon: LineChart },
   { href: "/login", label: "Angel One", icon: Link2 },
 ];

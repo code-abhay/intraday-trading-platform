@@ -235,6 +235,72 @@ export interface MarketQuoteFull {
   };
 }
 
+export type MarketQuoteMode = "FULL" | "OHLC" | "LTP";
+
+export interface MarketQuoteUnfetched {
+  exchange: string;
+  symbolToken: string;
+  message: string;
+}
+
+export interface MarketQuoteBatchResult {
+  fetched: MarketQuoteFull[];
+  unfetched: MarketQuoteUnfetched[];
+  message?: string;
+}
+
+/**
+ * Bulk quote fetch. The API supports up to 50 tokens per request.
+ */
+export async function angelOneGetMarketQuotes(
+  jwtToken: string,
+  apiKey: string,
+  exchangeTokens: Record<string, string[]>,
+  mode: MarketQuoteMode = "FULL"
+): Promise<MarketQuoteBatchResult> {
+  const cleanedExchangeTokens: Record<string, string[]> = {};
+  for (const [exchange, tokens] of Object.entries(exchangeTokens)) {
+    const validTokens = Array.from(new Set(tokens.filter((token) => token?.trim())));
+    if (!validTokens.length) continue;
+    cleanedExchangeTokens[exchange] = validTokens;
+  }
+
+  if (!Object.keys(cleanedExchangeTokens).length) {
+    return { fetched: [], unfetched: [] };
+  }
+
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({
+        mode,
+        exchangeTokens: cleanedExchangeTokens,
+      }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: {
+      fetched?: MarketQuoteFull[];
+      unfetched?: MarketQuoteUnfetched[];
+    };
+    message?: string;
+  };
+
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch market quotes");
+  }
+
+  return {
+    fetched: json.data?.fetched ?? [],
+    unfetched: json.data?.unfetched ?? [],
+    message: json.message,
+  };
+}
+
 /**
  * Fetch real-time market data using the Live Market Data API.
  * FULL mode gives LTP, today's OHLC, prev close, volume, OI, depth.
@@ -244,37 +310,21 @@ export async function angelOneGetMarketQuote(
   apiKey: string,
   exchange: string,
   symbolToken: string,
-  mode: "FULL" | "OHLC" | "LTP" = "FULL"
+  mode: MarketQuoteMode = "FULL"
 ): Promise<MarketQuoteFull | null> {
-  const res = await fetch(
-    `${BASE_URL}/rest/secure/angelbroking/market/v1/quote/`,
-    {
-      method: "POST",
-      headers: getAngelHeaders(jwtToken, apiKey),
-      body: JSON.stringify({
-        mode,
-        exchangeTokens: {
-          [exchange]: [symbolToken],
-        },
-      }),
-    }
+  const result = await angelOneGetMarketQuotes(
+    jwtToken,
+    apiKey,
+    { [exchange]: [symbolToken] },
+    mode
   );
 
-  const json = (await res.json()) as {
-    status: boolean;
-    data?: {
-      fetched?: MarketQuoteFull[];
-      unfetched?: { exchange: string; symbolToken: string; message: string }[];
-    };
-    message?: string;
-  };
-
-  if (!json.status || !json.data?.fetched?.length) {
-    const unfetchedMsg = json.data?.unfetched?.[0]?.message;
-    throw new Error(unfetchedMsg || json.message || "Failed to fetch market quote");
+  if (!result.fetched.length) {
+    const unfetchedMsg = result.unfetched[0]?.message;
+    throw new Error(unfetchedMsg || result.message || "Failed to fetch market quote");
   }
 
-  return json.data.fetched[0] ?? null;
+  return result.fetched[0] ?? null;
 }
 
 // --- Candle Data (Historical) ---
