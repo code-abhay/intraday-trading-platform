@@ -472,7 +472,7 @@ export default function Home() {
                   </div>
                 )}
 
-                {sig.bias !== "NEUTRAL" && marketOpen && (
+                {sig.bias !== "NEUTRAL" && marketOpen && data?.source !== "demo" && (
                   <div className="mt-4">
                     <Button asChild className="w-full sm:w-auto">
                       <Link href="/paper-trade">

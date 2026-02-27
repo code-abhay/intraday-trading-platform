@@ -6,7 +6,7 @@ import {
   angelOneGetOptionGreeks,
   angelOneGetOIBuildup,
 } from "@/lib/angel-one";
-import { getNextWeeklyExpiry } from "@/lib/expiry-utils";
+import { getExpiryCandidates } from "@/lib/expiry-utils";
 import { SEGMENTS } from "@/lib/segments";
 
 const JWT_COOKIE = "angel_jwt";
@@ -30,6 +30,7 @@ export async function GET(request: NextRequest) {
       angelSymbol: segment.angelSymbol,
       exchange: segment.exchange,
       strikeStep: segment.strikeStep,
+      expiryDay: segment.expiryDay,
     },
     auth: {
       apiKeySet: !!apiKey,
@@ -104,18 +105,39 @@ export async function GET(request: NextRequest) {
 
   // 4. Option Greeks
   try {
-    const expiry = getNextWeeklyExpiry();
-    const greeks = await angelOneGetOptionGreeks(
-      jwtToken,
-      apiKey,
-      segment.angelSymbol,
-      expiry
-    );
+    const expiryCandidates = getExpiryCandidates(segment.expiryDay);
+    let matchedExpiry: string | null = null;
+    let greeks: Awaited<ReturnType<typeof angelOneGetOptionGreeks>> = [];
+    const errors: string[] = [];
+
+    for (const expiry of expiryCandidates) {
+      try {
+        const rows = await angelOneGetOptionGreeks(
+          jwtToken,
+          apiKey,
+          segment.angelSymbol,
+          expiry
+        );
+        if (rows.length > 0) {
+          greeks = rows;
+          matchedExpiry = rows[0]?.expiry ?? expiry;
+          break;
+        }
+      } catch (e) {
+        errors.push(String(e));
+      }
+    }
+
     results.optionGreeks = {
-      success: true,
-      request: { name: segment.angelSymbol, expirydate: expiry },
+      success: greeks.length > 0,
+      request: {
+        name: segment.angelSymbol,
+        expiryCandidates,
+        matchedExpiry,
+      },
       count: greeks.length,
       first5: greeks.slice(0, 5),
+      errors: errors.slice(0, 3),
     };
   } catch (e) {
     results.optionGreeks = { success: false, error: String(e) };

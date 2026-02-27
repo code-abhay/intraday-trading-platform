@@ -435,20 +435,20 @@ async function getSignalsFromAngelOne(
       ),
     ]);
 
+  const pcrList = pcrResult.status === "fulfilled" ? pcrResult.value : [];
   if (pcrResult.status !== "fulfilled") {
-    throw pcrResult.reason instanceof Error
-      ? pcrResult.reason
-      : new Error("Failed to fetch PCR");
+    console.warn("[signals] PCR fetch failed; using neutral PCR fallback:", pcrResult.reason);
   }
 
-  const pcrList = pcrResult.value;
   const pcrItem = pcrList.find((p) =>
     segment.angelPCRFilter(p.tradingSymbol ?? "")
   );
+  const pcrValue = Number.isFinite(pcrItem?.pcr) ? Number(pcrItem?.pcr) : 1;
+  const pcrSymbol = pcrItem?.tradingSymbol;
   if (!pcrItem) {
     const symbols = pcrList.slice(0, 8).map((p) => p.tradingSymbol).join(", ");
-    throw new Error(
-      `${segment.label} not found in PCR. Available: ${symbols || "none"}`
+    console.warn(
+      `[signals] ${segment.label} not found in PCR; using neutral fallback. Available: ${symbols || "none"}`
     );
   }
 
@@ -766,7 +766,7 @@ async function getSignalsFromAngelOne(
     })).filter((g) => !isNaN(g.strike));
 
     const preBias = computeMultiFactorBias(
-      pcrItem.pcr,
+      pcrValue,
       priceAction,
       technicalIndicators,
       advancedFilters,
@@ -783,7 +783,7 @@ async function getSignalsFromAngelOne(
   }
 
   const signal = generateSignalFromPCR(
-    pcrItem.pcr,
+    pcrValue,
     underlyingValue,
     maxPainStrike,
     {
@@ -798,6 +798,7 @@ async function getSignalsFromAngelOne(
       priceAction,
       oiData,
       expiryDay: segment.expiryDay,
+      expiryDate: matchedExpiry || undefined,
       bestGreekStrike,
       advancedFilters,
       technicalIndicators,
@@ -958,8 +959,9 @@ async function getSignalsFromAngelOne(
 
   console.log("[signals] Angel One result:", {
     symbol,
-    pcr: pcrItem.pcr,
-    pcrSymbol: pcrItem.tradingSymbol,
+    pcr: pcrValue,
+    pcrSymbol: pcrSymbol ?? "none",
+    pcrAvailable: Boolean(pcrItem),
     bias: signal.bias,
     biasStrength: signal.biasStrength,
     confidence: signal.confidence,
@@ -980,8 +982,8 @@ async function getSignalsFromAngelOne(
     symbol,
     underlyingValue,
     signal,
-    rawPCR: pcrItem.pcr,
-    pcrSymbol: pcrItem.tradingSymbol,
+    rawPCR: pcrItem?.pcr,
+    pcrSymbol: pcrSymbol,
     expiry: matchedExpiry || getExpiryCandidates(segment.expiryDay)[0] || "",
     optionSymbol: optionSymbolName || "",
     optionPremiumSource,
@@ -1068,8 +1070,17 @@ async function resolveSignalsData(
     strikeStep: step,
     strategyProfile: segment.strategy,
   });
+  demoSignal.bias = "NEUTRAL";
+  demoSignal.biasStrength = "NEUTRAL";
+  demoSignal.confidence = 0;
+  demoSignal.targets = undefined;
+  demoSignal.optionsAdvisor = undefined;
+  demoSignal.signalStrength = undefined;
+  demoSignal.advancedFilters = undefined;
   demoSignal.summary =
-    "Demo: Sample BULLISH signal (PCR 1.25). Live data: login at /login during market hours.";
+    segment.nseSymbol
+      ? "Live feed unavailable right now. Showing fallback index price only."
+      : `${segment.label} requires Angel One session for options data. Login at /login.`;
   return {
     source: "demo" as const,
     symbol,

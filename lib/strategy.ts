@@ -639,6 +639,46 @@ function getDaysToExpiry(expiryDay: ExpiryDay): number {
   return daysAhead || 7;
 }
 
+function getDaysToExpiryFromAngelDate(expiryDate: string): number | null {
+  const normalized = expiryDate.trim().toUpperCase();
+  const m = normalized.match(/^(\d{2})([A-Z]{3})(\d{4})$/);
+  if (!m) return null;
+
+  const day = Number(m[1]);
+  const mon = m[2];
+  const year = Number(m[3]);
+  const monthIdx: Record<string, number> = {
+    JAN: 0,
+    FEB: 1,
+    MAR: 2,
+    APR: 3,
+    MAY: 4,
+    JUN: 5,
+    JUL: 6,
+    AUG: 7,
+    SEP: 8,
+    OCT: 9,
+    NOV: 10,
+    DEC: 11,
+  };
+  const month = monthIdx[mon];
+  if (!Number.isFinite(day) || !Number.isFinite(year) || month === undefined) {
+    return null;
+  }
+
+  const expiryUtcStart = Date.UTC(year, month, day);
+  const now = new Date();
+  const nowIstMs = now.getTime() + 330 * 60 * 1000;
+  const nowIst = new Date(nowIstMs);
+  const todayIstStartUtc = Date.UTC(
+    nowIst.getUTCFullYear(),
+    nowIst.getUTCMonth(),
+    nowIst.getUTCDate()
+  );
+  const diffDays = Math.round((expiryUtcStart - todayIstStartUtc) / 86_400_000);
+  return Math.max(0, diffDays);
+}
+
 export interface GreekStrikeData {
   strike: number;
   optionType: "CE" | "PE";
@@ -687,6 +727,7 @@ export function computeOptionsAdvisor(
   strikeStep = 50, mode: StrikeMode = "High Delta", volRegime: VolRegime = "NORMAL",
   realDelta?: number, realIV?: number, expiryDay: ExpiryDay = 4,
   bestGreekStrike?: GreekStrikeData | null,
+  expiryDate?: string,
 ): OptionsAdvisor {
   const effectiveBias = bias === "NEUTRAL" ? "BULLISH" : bias;
   const isBullish = effectiveBias === "BULLISH";
@@ -722,7 +763,8 @@ export function computeOptionsAdvisor(
   const timeValue = strike * basePremMult * volAdj * (atr / underlying);
   const premium = Math.max(5, Math.round(intrinsic + timeValue));
 
-  const daysToExpiry = getDaysToExpiry(expiryDay);
+  const daysToExpiry =
+    expiryDate ? (getDaysToExpiryFromAngelDate(expiryDate) ?? getDaysToExpiry(expiryDay)) : getDaysToExpiry(expiryDay);
   const theta = parseFloat((-premium / Math.max(1, daysToExpiry) * 0.6).toFixed(2));
 
   const diff = isCall ? underlying - strike : strike - underlying;
@@ -1010,6 +1052,7 @@ export interface GenerateSignalOpts {
   priceAction?: PriceAction;
   oiData?: { longCount: number; shortCount: number };
   expiryDay?: ExpiryDay;
+  expiryDate?: string;
   bestGreekStrike?: GreekStrikeData | null;
   advancedFilters?: AdvancedFilters | null;
   technicalIndicators?: TechnicalIndicators | null;
@@ -1099,6 +1142,7 @@ export function generateSignalFromPCR(
     underlyingValue, atr, bias, strikeStep, "High Delta", volInfo.regime,
     opts?.greekDelta, opts?.greekIV, opts?.expiryDay ?? 4,
     opts?.bestGreekStrike,
+    opts?.expiryDate,
   );
 
   const sentiment = computeSentiment(pcrValue, opts?.priceAction, opts?.oiData, volInfo.regime, tech);
