@@ -1,0 +1,59 @@
+name: Market Data Ingest
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 09:20 IST (UTC 03:50), weekdays
+    - cron: "50 3 * * 1-5"
+    # 09:30 IST to 15:00 IST, every 10 minutes
+    - cron: "*/10 4-9 * * 1-5"
+    # 15:30 IST close check (UTC 10:00)
+    - cron: "0 10 * * 1-5"
+
+jobs:
+  ingest-intraday:
+    name: Trigger intraday ingestion
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Call ingest endpoint
+        env:
+          INGEST_URL: "https://intraday-trading-platform.vercel.app/api/market-data/ingest?mode=intraday"
+          INGEST_SECRET: ${{ secrets.INGEST_CRON_SECRET }}
+          ANGEL_JWT_TOKEN: ${{ secrets.ANGEL_JWT_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${INGEST_SECRET}" ]; then
+            echo "Missing GitHub secret: INGEST_CRON_SECRET"
+            exit 1
+          fi
+
+          curl_args=(-sS -H "Authorization: Bearer ${INGEST_SECRET}")
+          if [ -n "${ANGEL_JWT_TOKEN}" ]; then
+            curl_args+=(-H "x-angel-jwt: ${ANGEL_JWT_TOKEN}")
+          fi
+
+          response="$(curl "${curl_args[@]}" "${INGEST_URL}")"
+
+          echo "Ingestion response:"
+          echo "${response}" | jq .
+
+          status="$(echo "${response}" | jq -r '.status // empty')"
+          if [ -z "${status}" ]; then
+            echo "Missing status in ingestion response."
+            exit 1
+          fi
+
+          if [ "${status}" = "FAILED" ]; then
+            echo "Ingestion returned FAILED."
+            exit 1
+          fi
+
+          auth_enabled="$(echo "${response}" | jq -r '.authEnabled')"
+          if [ "${auth_enabled}" != "true" ]; then
+            echo "Ingestion auth is disabled. Set ANGEL_JWT_TOKEN (GitHub secret) or ANGEL_JWT_TOKEN (Vercel env)."
+            exit 1
+          fi
+
+          echo "Accepted ingestion status: ${status}"

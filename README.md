@@ -50,6 +50,16 @@ To use Angel One as the primary data source (PCR, OI buildup):
 
 See [docs/ANGEL_ONE_SETUP.md](docs/ANGEL_ONE_SETUP.md) for the full guide.
 
+For normalized storage + scheduled fetch pipeline, see:
+
+- [docs/MARKET_DATA_PIPELINE.md](docs/MARKET_DATA_PIPELINE.md)
+
+Key endpoints:
+
+- `GET /api/market-data/ingest` (intraday ingestion)
+- `GET /api/market-data/ingest/daily` (daily universe ingestion)
+- `GET /api/market-data/latest` (latest normalized snapshots)
+
 ---
 
 ## Getting Started

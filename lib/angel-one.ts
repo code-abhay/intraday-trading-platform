@@ -403,3 +403,211 @@ export async function angelOneGetOptionGreeks(
   }
   return json.data ?? [];
 }
+
+export interface AngelOneHistoricalOIRow {
+  time: string;
+  oi: number;
+}
+
+export async function angelOneGetOIData(
+  jwtToken: string,
+  apiKey: string,
+  exchange: "NFO" | "BFO" | "MCX",
+  symbolToken: string,
+  interval:
+    | "ONE_MINUTE"
+    | "THREE_MINUTE"
+    | "FIVE_MINUTE"
+    | "TEN_MINUTE"
+    | "FIFTEEN_MINUTE"
+    | "THIRTY_MINUTE"
+    | "ONE_HOUR"
+    | "ONE_DAY",
+  fromDate: string,
+  toDate: string
+): Promise<AngelOneHistoricalOIRow[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/historical/v1/getOIData`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({
+        exchange,
+        symboltoken: symbolToken,
+        interval,
+        fromdate: fromDate,
+        todate: toDate,
+      }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneHistoricalOIRow[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch OI data");
+  }
+  return json.data ?? [];
+}
+
+export interface AngelOneTopMoverItem {
+  tradingSymbol: string;
+  percentChange: number;
+  symbolToken: number;
+  opnInterest: number;
+  netChangeOpnInterest: number;
+}
+
+export type AngelOneTopMoverDataType =
+  | "PercOIGainers"
+  | "PercOILosers"
+  | "PercPriceGainers"
+  | "PercPriceLosers";
+
+export async function angelOneGetGainersLosers(
+  jwtToken: string,
+  apiKey: string,
+  dataType: AngelOneTopMoverDataType,
+  expiryType: "NEAR" | "NEXT" | "FAR" = "NEAR"
+): Promise<AngelOneTopMoverItem[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/marketData/v1/gainersLosers`,
+    {
+      method: "POST",
+      headers: getAngelHeaders(jwtToken, apiKey),
+      body: JSON.stringify({
+        datatype: dataType,
+        expirytype: expiryType,
+      }),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneTopMoverItem[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch gainers/losers data");
+  }
+  return json.data ?? [];
+}
+
+export interface AngelOneIntradayScrip {
+  Exchange: string;
+  SymbolName: string;
+  Multiplier: string;
+}
+
+export async function angelOneGetNseIntradayScrips(
+  jwtToken: string,
+  apiKey: string
+): Promise<AngelOneIntradayScrip[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/marketData/v1/nseIntraday`,
+    {
+      method: "GET",
+      headers: getAngelHeaders(jwtToken, apiKey),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneIntradayScrip[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch NSE intraday universe");
+  }
+  return json.data ?? [];
+}
+
+export async function angelOneGetBseIntradayScrips(
+  jwtToken: string,
+  apiKey: string
+): Promise<AngelOneIntradayScrip[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/marketData/v1/bseIntraday`,
+    {
+      method: "GET",
+      headers: getAngelHeaders(jwtToken, apiKey),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneIntradayScrip[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch BSE intraday universe");
+  }
+  return json.data ?? [];
+}
+
+export interface AngelOneCautionaryScrip {
+  token: string;
+  symbol: string;
+  message: string;
+}
+
+export async function angelOneGetCautionaryScrips(
+  jwtToken: string,
+  apiKey: string
+): Promise<AngelOneCautionaryScrip[]> {
+  const res = await fetch(
+    `${BASE_URL}/rest/secure/angelbroking/securities/v1/cautionaryScrips`,
+    {
+      method: "GET",
+      headers: getAngelHeaders(jwtToken, apiKey),
+    }
+  );
+
+  const json = (await res.json()) as {
+    status: boolean;
+    data?: AngelOneCautionaryScrip[];
+    message?: string;
+  };
+  if (!json.status) {
+    throw new Error(json.message || "Failed to fetch cautionary scrips");
+  }
+  return json.data ?? [];
+}
+
+const INSTRUMENT_MASTER_URL =
+  "https://margincalculator.angelone.in/OpenAPI_File/files/OpenAPIScripMaster.json";
+
+export interface AngelOneInstrumentMasterRow {
+  token: string;
+  symbol: string;
+  name: string;
+  expiry: string;
+  strike: string;
+  lotsize: string;
+  instrumenttype: string;
+  exch_seg: string;
+  tick_size: string;
+}
+
+export async function angelOneGetInstrumentMaster(): Promise<
+  AngelOneInstrumentMasterRow[]
+> {
+  const res = await fetch(INSTRUMENT_MASTER_URL, {
+    method: "GET",
+    headers: { Accept: "application/json" },
+  });
+
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch instrument master: ${res.status} ${res.statusText}`
+    );
+  }
+
+  const json = (await res.json()) as AngelOneInstrumentMasterRow[];
+  if (!Array.isArray(json)) {
+    throw new Error("Invalid instrument master response format");
+  }
+  return json;
+}

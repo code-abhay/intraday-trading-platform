@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const PUBLIC_PATHS = ["/auth", "/api/auth", "/terms", "/privacy", "/disclaimer"];
+const PUBLIC_PATHS = [
+  "/auth",
+  "/api/auth",
+  "/api/market-data/ingest",
+  "/terms",
+  "/privacy",
+  "/disclaimer",
+];
 
 function hashToken(password: string): string {
   let hash = 0;

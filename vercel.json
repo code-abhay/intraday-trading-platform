@@ -1,4 +1,10 @@
 {
   "framework": "nextjs",
-  "buildCommand": "npm run build"
+  "buildCommand": "npm run build",
+  "crons": [
+    {
+      "path": "/api/market-data/ingest/daily",
+      "schedule": "35 3 * * 1-5"
+    }
+  ]
 }
