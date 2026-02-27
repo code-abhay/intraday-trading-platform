@@ -374,26 +374,63 @@ export function computeSignalStrength(
   pcrValue: number, priceAction?: PriceAction, volRegime?: VolRegime,
   oiLongCount?: number, oiShortCount?: number,
   tech?: TechnicalIndicators | null, filters?: AdvancedFilters | null,
+  bias: "BULLISH" | "BEARISH" | "NEUTRAL" = "NEUTRAL",
 ): SignalStrength {
   const components: { name: string; ok: boolean }[] = [];
+  const directionalBias =
+    bias !== "NEUTRAL"
+      ? bias
+      : tech
+        ? (tech.emaTrend === "BULL" ? "BULLISH" : "BEARISH")
+        : priceAction
+          ? (priceAction.ltp >= priceAction.prevClose ? "BULLISH" : "BEARISH")
+          : "BULLISH";
+  const wantsBull = directionalBias === "BULLISH";
 
   if (tech) {
-    components.push({ name: `EMA 21/50 (${tech.emaTrend})`, ok: tech.emaTrend === "BULL" });
-    components.push({ name: `RSI ${tech.rsiValue} (${tech.rsiSignal})`, ok: tech.rsiSignal === "BULL" });
-    components.push({ name: `MACD Hist ${tech.macdHist > 0 ? "+" : ""}${tech.macdHist}`, ok: tech.macdHist > 0 });
-    components.push({ name: `VWAP (${tech.vwapBias})`, ok: tech.vwapBias === "BULL" });
+    components.push({ name: `EMA 21/50 (${tech.emaTrend})`, ok: wantsBull ? tech.emaTrend === "BULL" : tech.emaTrend === "BEAR" });
+    components.push({ name: `RSI ${tech.rsiValue} (${tech.rsiSignal})`, ok: wantsBull ? tech.rsiSignal === "BULL" : tech.rsiSignal === "BEAR" });
+    components.push({
+      name: `MACD Hist ${tech.macdHist > 0 ? "+" : ""}${tech.macdHist}`,
+      ok: wantsBull ? tech.macdHist > 0 : tech.macdHist < 0,
+    });
+    components.push({ name: `VWAP (${tech.vwapBias})`, ok: wantsBull ? tech.vwapBias === "BULL" : tech.vwapBias === "BEAR" });
     components.push({ name: `ADX Strength (${tech.trendStrength})`, ok: tech.adxProxy >= 18 });
   } else if (priceAction) {
-    components.push({ name: "Trend (LTP > PrevClose)", ok: priceAction.ltp > priceAction.prevClose });
-    components.push({ name: "Momentum", ok: Math.abs(priceAction.ltp - priceAction.open) / priceAction.open > 0.001 });
-    components.push({ name: "MACD proxy", ok: priceAction.ltp > (priceAction.open + priceAction.prevClose) / 2 });
-    components.push({ name: "VWAP proxy", ok: priceAction.ltp > (priceAction.high + priceAction.low) / 2 });
+    components.push({
+      name: "Trend (LTP vs PrevClose)",
+      ok: wantsBull ? priceAction.ltp > priceAction.prevClose : priceAction.ltp < priceAction.prevClose,
+    });
+    components.push({
+      name: "Momentum",
+      ok: wantsBull
+        ? priceAction.ltp > priceAction.open * 1.001
+        : priceAction.ltp < priceAction.open * 0.999,
+    });
+    components.push({
+      name: "MACD proxy",
+      ok: wantsBull
+        ? priceAction.ltp > (priceAction.open + priceAction.prevClose) / 2
+        : priceAction.ltp < (priceAction.open + priceAction.prevClose) / 2,
+    });
+    components.push({
+      name: "VWAP proxy",
+      ok: wantsBull
+        ? priceAction.ltp > (priceAction.high + priceAction.low) / 2
+        : priceAction.ltp < (priceAction.high + priceAction.low) / 2,
+    });
     components.push({ name: "ADX proxy", ok: (priceAction.high - priceAction.low) / priceAction.prevClose > 0.003 });
   }
 
   if (filters) {
-    components.push({ name: `Range Filter (${filters.rfConfirmsBull ? "▲" : filters.rfConfirmsBear ? "▼" : "—"})`, ok: filters.rfConfirmsBull });
-    components.push({ name: `RQK (${filters.rqkConfirmsBull ? "▲" : filters.rqkConfirmsBear ? "▼" : "—"})`, ok: filters.rqkConfirmsBull });
+    components.push({
+      name: `Range Filter (${filters.rfConfirmsBull ? "▲" : filters.rfConfirmsBear ? "▼" : "—"})`,
+      ok: wantsBull ? filters.rfConfirmsBull : filters.rfConfirmsBear,
+    });
+    components.push({
+      name: `RQK (${filters.rqkConfirmsBull ? "▲" : filters.rqkConfirmsBear ? "▼" : "—"})`,
+      ok: wantsBull ? filters.rqkConfirmsBull : filters.rqkConfirmsBear,
+    });
     components.push({ name: `Chop ${filters.choppiness} (${filters.isChoppy ? "Ranging" : "Trending"})`, ok: !filters.isChoppy });
   }
 
@@ -1020,7 +1057,16 @@ export function generateSignalFromPCR(
   };
   const atrSma = opts?.atrSma ?? atr;
   const volInfo = computeVolatility(atr, atrSma);
-  const signalStrength = computeSignalStrength(pcrValue, opts?.priceAction, volInfo.regime, opts?.oiData?.longCount, opts?.oiData?.shortCount, tech, filters);
+  const signalStrength = computeSignalStrength(
+    pcrValue,
+    opts?.priceAction,
+    volInfo.regime,
+    opts?.oiData?.longCount,
+    opts?.oiData?.shortCount,
+    tech,
+    filters,
+    bias
+  );
 
   let signalExpired = false;
   let alternateBlocked = false;

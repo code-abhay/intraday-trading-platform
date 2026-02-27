@@ -40,7 +40,8 @@ const DEFAULT_CAPITAL = 100000;
 const MAX_OPEN_TRADES = 3;
 const MAX_OPEN_TRADES_PER_SEGMENT = 1;
 const MIN_SIGNAL_CONFIDENCE = 60;
-const MIN_SIGNAL_STRENGTH = 5;
+const MIN_SIGNAL_STRENGTH_FLOOR = 4;
+const MIN_SIGNAL_STRENGTH_RATIO = 0.65;
 const DAILY_LOSS_LIMIT = -3000;
 const LOSS_COOLDOWN_MS = 10 * 60 * 1000;
 const MAX_DAILY_TRADES = 8;
@@ -402,9 +403,15 @@ export default function PaperTradePage() {
     if ((q?.confidence ?? 0) < MIN_SIGNAL_CONFIDENCE) {
       reasons.push(`Confidence ${q?.confidence ?? 0}% below ${MIN_SIGNAL_CONFIDENCE}% threshold.`);
     }
-    if ((q?.signalStrengthScore ?? 0) < MIN_SIGNAL_STRENGTH) {
+    const strengthScore = q?.signalStrengthScore ?? 0;
+    const strengthMax = q?.signalStrengthMax ?? 0;
+    const minStrengthRequired =
+      strengthMax > 0
+        ? Math.max(MIN_SIGNAL_STRENGTH_FLOOR, Math.ceil(strengthMax * MIN_SIGNAL_STRENGTH_RATIO))
+        : MIN_SIGNAL_STRENGTH_FLOOR;
+    if (strengthScore < minStrengthRequired) {
       reasons.push(
-        `Signal strength ${q?.signalStrengthScore ?? 0}/${q?.signalStrengthMax ?? 0} below threshold.`
+        `Signal strength ${strengthScore}/${strengthMax} below threshold (${minStrengthRequired}/${strengthMax}).`
       );
     }
     if (q?.isChoppy) reasons.push("Choppy regime detected; entry blocked.");
