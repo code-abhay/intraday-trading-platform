@@ -7,6 +7,8 @@
     "auto-sync": "node scripts/auto-sync.js",
     "dev:auto": "concurrently \"npm run dev\" \"npm run auto-sync\"",
     "setup": "npm install && echo 'Setup complete. Run: npm run dev:auto'",
+    "db:push": "npx supabase db push --include-all",
+    "db:dry-run": "npx supabase db push --dry-run --include-all",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
