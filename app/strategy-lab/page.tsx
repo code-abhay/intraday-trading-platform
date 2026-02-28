@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppHeader, SegmentSelector } from "@/components/app-header";
 import { StatCard } from "@/components/stat-card";
 import { Badge } from "@/components/ui/badge";
@@ -84,6 +84,14 @@ export default function StrategyLabPage() {
   const [activeRunId, setActiveRunId] = useState<string | null>(null);
   const [activeRunStatus, setActiveRunStatus] = useState<StrategyLabRunStatusResponse["status"] | null>(null);
   const [runIdInput, setRunIdInput] = useState("");
+  const latestLabRequestRef = useRef(0);
+  const activeRunIdRef = useRef<string | null>(null);
+
+  const currentFilterLabel = useMemo(() => {
+    if (segment === "ALL") return "All Segments";
+    const selected = SEGMENT_OPTIONS.find((item) => item.id === segment);
+    return selected?.label ?? segment;
+  }, [segment]);
 
   const fetchRunStatus = useCallback(async (runId: string) => {
     const response = await fetch(`/api/strategy-lab/run/${runId}`);
@@ -91,6 +99,11 @@ export default function StrategyLabPage() {
     if (!response.ok) {
       throw new Error(payload.error || "Failed to fetch async run status");
     }
+
+    // Ignore stale responses from previous runs.
+    if (activeRunIdRef.current !== runId) return;
+
+    activeRunIdRef.current = runId;
     setActiveRunId(runId);
     setActiveRunStatus(payload.status);
     if (payload.status === "COMPLETED" && payload.result) {
@@ -103,8 +116,15 @@ export default function StrategyLabPage() {
 
   const fetchLab = useCallback(
     async (force = false) => {
+      const requestId = latestLabRequestRef.current + 1;
+      latestLabRequestRef.current = requestId;
       setLoading(true);
       setError(null);
+      // Clear stale rows while a new manual run is in-flight.
+      setData(null);
+      activeRunIdRef.current = null;
+      setActiveRunId(null);
+      setActiveRunStatus(null);
       try {
         const params = new URLSearchParams({
           segment,
@@ -114,28 +134,34 @@ export default function StrategyLabPage() {
         if (force) params.set("force", "1");
         const response = await fetch(`/api/strategy-lab?${params.toString()}`);
         const payload = (await response.json()) as StrategyLabApiResponse & { error?: string };
+        if (requestId !== latestLabRequestRef.current) return;
         if (!response.ok) {
           throw new Error(payload.error || "Failed to load strategy lab report");
         }
         if (payload.mode === "async" && payload.runId) {
-          setData(null);
+          activeRunIdRef.current = payload.runId;
           setActiveRunId(payload.runId);
           setActiveRunStatus(payload.status ?? "PENDING");
           setRunIdInput(payload.runId);
           void fetchRunStatus(payload.runId).catch((runError) => {
+            if (activeRunIdRef.current !== payload.runId) return;
             setError(runError instanceof Error ? runError.message : "Failed to fetch async run status");
           });
         } else {
-          setData(payload);
+          activeRunIdRef.current = null;
           setActiveRunId(null);
           setActiveRunStatus(null);
+          setData(payload);
         }
       } catch (fetchError) {
+        if (requestId !== latestLabRequestRef.current) return;
+        activeRunIdRef.current = null;
         setData(null);
         setError(
           fetchError instanceof Error ? fetchError.message : "Failed to load strategy lab report"
         );
       } finally {
+        if (requestId !== latestLabRequestRef.current) return;
         setLoading(false);
       }
     },
@@ -151,8 +177,10 @@ export default function StrategyLabPage() {
   useEffect(() => {
     if (!activeRunId || !activeRunStatus) return;
     if (activeRunStatus === "COMPLETED" || activeRunStatus === "FAILED") return;
+    const pollingRunId = activeRunId;
     const interval = window.setInterval(() => {
-      void fetchRunStatus(activeRunId).catch((pollError) => {
+      void fetchRunStatus(pollingRunId).catch((pollError) => {
+        if (activeRunIdRef.current !== pollingRunId) return;
         setError(pollError instanceof Error ? pollError.message : "Failed to poll run status");
       });
     }, 4000);
@@ -301,8 +329,13 @@ export default function StrategyLabPage() {
                     type="button"
                     variant="outline"
                     onClick={() => {
-                      if (!runIdInput.trim()) return;
-                      void fetchRunStatus(runIdInput.trim()).catch((runError) => {
+                      const targetRunId = runIdInput.trim();
+                      if (!targetRunId) return;
+                      activeRunIdRef.current = targetRunId;
+                      setActiveRunId(targetRunId);
+                      setActiveRunStatus("PENDING");
+                      void fetchRunStatus(targetRunId).catch((runError) => {
+                        if (activeRunIdRef.current !== targetRunId) return;
                         setError(runError instanceof Error ? runError.message : "Failed to load run");
                       });
                     }}
@@ -322,6 +355,7 @@ export default function StrategyLabPage() {
                 {typeof data.pageSize === "number" ? ` • Page size: ${data.pageSize}` : ""}
               </p>
             )}
+            <p className="text-xs text-zinc-500">Current filter: {currentFilterLabel}</p>
             {activeRunId && activeRunStatus && activeRunStatus !== "COMPLETED" && (
               <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200 flex items-center gap-2">
                 <LoaderCircle className="size-3 animate-spin" />
