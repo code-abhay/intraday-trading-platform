@@ -1,0 +1,17 @@
+---
+description: Prefer automation-first workflows over manual repetitive steps
+alwaysApply: true
+---
+
+# Automation-First Workflow
+
+When implementing operational or infra-related changes:
+
+1. Prefer **versioned automation** over one-off manual actions.
+2. For database changes, use **repo migrations + CI/CD execution** before suggesting SQL-editor-only steps.
+3. Keep manual steps only as a fallback and document why automation is not possible.
+4. Add/extend scripts and workflows when they reduce repeated human effort.
+5. Ensure automation is safe:
+   - idempotent migrations where possible
+   - secret-driven credentials (never hardcoded)
+   - explicit failure on missing configuration

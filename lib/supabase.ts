@@ -2,9 +2,48 @@ import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 let _client: SupabaseClient | null = null;
 let _adminClient: SupabaseClient | null = null;
+let _warnedInvalidUrl = false;
+
+function normalizeSupabaseUrl(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+
+  // Accept a project ref directly and convert it to the canonical API URL.
+  if (/^[a-z0-9]{20}$/i.test(trimmed)) {
+    return `https://${trimmed.toLowerCase()}.supabase.co`;
+  }
+
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+    if (host.endsWith(".supabase.co")) {
+      return `${parsed.protocol}//${host}`;
+    }
+    // Common misconfiguration: dashboard URL copied instead of API URL.
+    if (host === "supabase.com" || host === "www.supabase.com" || host === "app.supabase.com") {
+      const match = parsed.pathname.match(/\/(?:dashboard\/)?project\/([a-z0-9]{20})/i);
+      if (match?.[1]) {
+        return `https://${match[1].toLowerCase()}.supabase.co`;
+      }
+    }
+  } catch {
+    // fall through to warning below
+  }
+
+  if (!_warnedInvalidUrl) {
+    _warnedInvalidUrl = true;
+    console.warn(
+      "[supabase] Invalid SUPABASE URL format. Use https://<project-ref>.supabase.co or set project ref."
+    );
+  }
+  return undefined;
+}
 
 function getSupabaseUrl(): string | undefined {
-  return process.env.NEXT_PUBLIC_SUPABASE_URL ?? process.env.SUPABASE_URL;
+  const preferred = normalizeSupabaseUrl(process.env.NEXT_PUBLIC_SUPABASE_URL);
+  if (preferred) return preferred;
+  return normalizeSupabaseUrl(process.env.SUPABASE_URL);
 }
 
 export function getSupabase(): SupabaseClient | null {

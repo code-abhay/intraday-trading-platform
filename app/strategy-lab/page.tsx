@@ -21,40 +21,27 @@ import {
   AlertTriangle,
   Clock,
   FlaskConical,
+  LoaderCircle,
   RefreshCw,
   ShieldCheck,
   Trophy,
 } from "lucide-react";
-import type { StrategyEvaluation } from "@/lib/strategy-lab/types";
+import type { ExecutionProfile, StrategyEvaluation, StrategyLabApiResponse } from "@/lib/strategy-lab/types";
 
 type SegmentPicker = SegmentId | "ALL";
 
-interface StrategyLabResponse {
-  generatedAt: string;
-  from: string;
-  to: string;
-  days: number;
-  pageSize?: number;
-  segments: {
-    segment: SegmentId;
-    evaluations: StrategyEvaluation[];
-    bestStrategy: StrategyEvaluation | null;
-    diagnostics: {
-      candleRowsFetched: number;
-      snapshotRowsFetched: number;
-      oiRowsFetched: number;
-      oiPointsMapped: number;
-      oiPagesFetched: number;
-    };
-  }[];
-  overallRanking: StrategyEvaluation[];
-  warnings: string[];
+interface StrategyLabRunStatusResponse {
+  runId: string;
+  status: "PENDING" | "RUNNING" | "COMPLETED" | "FAILED";
+  error?: string | null;
+  result?: StrategyLabApiResponse | null;
 }
 
 const SEGMENT_OPTIONS = [
   { id: "ALL", label: "All Segments" },
   ...SEGMENTS.map((segment) => ({ id: segment.id, label: segment.label })),
 ];
+const DAY_PRESETS = [7, 45, 90, 180, 365];
 
 function formatNumber(value: number, digits = 2): string {
   return value.toLocaleString("en-IN", {
@@ -80,12 +67,39 @@ function qualityBadgeClass(quality: string): string {
   return "bg-amber-500/10 text-amber-300 border-amber-500/30";
 }
 
+function topRejectionReason(reasons: Record<string, number>): string {
+  const entries = Object.entries(reasons);
+  if (!entries.length) return "n/a";
+  const best = entries.sort((a, b) => b[1] - a[1])[0];
+  return `${best[0]} (${best[1]})`;
+}
+
 export default function StrategyLabPage() {
   const [segment, setSegment] = useState<SegmentPicker>("ALL");
-  const [days, setDays] = useState(7);
-  const [loading, setLoading] = useState(true);
+  const [days, setDays] = useState(45);
+  const [profile, setProfile] = useState<ExecutionProfile>("balanced");
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [data, setData] = useState<StrategyLabResponse | null>(null);
+  const [data, setData] = useState<StrategyLabApiResponse | null>(null);
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+  const [activeRunStatus, setActiveRunStatus] = useState<StrategyLabRunStatusResponse["status"] | null>(null);
+  const [runIdInput, setRunIdInput] = useState("");
+
+  const fetchRunStatus = useCallback(async (runId: string) => {
+    const response = await fetch(`/api/strategy-lab/run/${runId}`);
+    const payload = (await response.json()) as StrategyLabRunStatusResponse & { error?: string };
+    if (!response.ok) {
+      throw new Error(payload.error || "Failed to fetch async run status");
+    }
+    setActiveRunId(runId);
+    setActiveRunStatus(payload.status);
+    if (payload.status === "COMPLETED" && payload.result) {
+      setData(payload.result);
+      setError(null);
+    } else if (payload.status === "FAILED") {
+      setError(payload.error || "Async run failed");
+    }
+  }, []);
 
   const fetchLab = useCallback(
     async (force = false) => {
@@ -94,15 +108,28 @@ export default function StrategyLabPage() {
       try {
         const params = new URLSearchParams({
           segment,
-          days: String(Math.min(14, Math.max(3, days))),
+          days: String(Math.min(365, Math.max(7, days))),
+          profile,
         });
         if (force) params.set("force", "1");
         const response = await fetch(`/api/strategy-lab?${params.toString()}`);
-        const payload = (await response.json()) as StrategyLabResponse & { error?: string };
+        const payload = (await response.json()) as StrategyLabApiResponse & { error?: string };
         if (!response.ok) {
           throw new Error(payload.error || "Failed to load strategy lab report");
         }
-        setData(payload);
+        if (payload.mode === "async" && payload.runId) {
+          setData(null);
+          setActiveRunId(payload.runId);
+          setActiveRunStatus(payload.status ?? "PENDING");
+          setRunIdInput(payload.runId);
+          void fetchRunStatus(payload.runId).catch((runError) => {
+            setError(runError instanceof Error ? runError.message : "Failed to fetch async run status");
+          });
+        } else {
+          setData(payload);
+          setActiveRunId(null);
+          setActiveRunStatus(null);
+        }
       } catch (fetchError) {
         setData(null);
         setError(
@@ -112,12 +139,25 @@ export default function StrategyLabPage() {
         setLoading(false);
       }
     },
-    [days, segment]
+    [days, fetchRunStatus, profile, segment]
   );
 
   useEffect(() => {
-    void fetchLab();
-  }, [fetchLab]);
+    void fetchLab(false);
+    // Initial load only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (!activeRunId || !activeRunStatus) return;
+    if (activeRunStatus === "COMPLETED" || activeRunStatus === "FAILED") return;
+    const interval = window.setInterval(() => {
+      void fetchRunStatus(activeRunId).catch((pollError) => {
+        setError(pollError instanceof Error ? pollError.message : "Failed to poll run status");
+      });
+    }, 4000);
+    return () => window.clearInterval(interval);
+  }, [activeRunId, activeRunStatus, fetchRunStatus]);
 
   const topOverall = data?.overallRanking?.[0] ?? null;
   const totalTrades = useMemo(
@@ -136,6 +176,13 @@ export default function StrategyLabPage() {
       ranking.length
     );
   }, [data]);
+  const lowTradeDiagnostics = useMemo(() => {
+    const list = data?.overallRanking ?? [];
+    const activeDays = data?.days ?? days;
+    return list
+      .filter((item) => item.kpis.trades <= Math.max(4, Math.round(activeDays * 0.75)))
+      .slice(0, 12);
+  }, [data, days]);
   const lastUpdated = data ? new Date(data.generatedAt).toLocaleTimeString() : null;
 
   return (
@@ -150,7 +197,7 @@ export default function StrategyLabPage() {
           {data && (
             <>
               <Badge variant="default" className="hidden sm:inline-flex">
-                1-Week Forward Test
+                {data.mode === "async" ? "Cached Async Run" : "Direct Evaluation"}
               </Badge>
               <span className="hidden sm:inline-flex items-center text-xs text-zinc-500">
                 <Clock className="size-3 mr-1" />
@@ -177,6 +224,39 @@ export default function StrategyLabPage() {
             <CardTitle className="text-base">Test Controls</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            <div className="flex flex-col gap-4">
+              <div className="flex flex-wrap gap-2">
+                {DAY_PRESETS.map((preset) => (
+                  <Button
+                    key={preset}
+                    type="button"
+                    variant={days === preset ? "default" : "outline"}
+                    size="sm"
+                    onClick={() => setDays(preset)}
+                  >
+                    {preset}d
+                  </Button>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={profile === "balanced" ? "default" : "outline"}
+                  onClick={() => setProfile("balanced")}
+                >
+                  Balanced (default)
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={profile === "strict" ? "default" : "outline"}
+                  onClick={() => setProfile("strict")}
+                >
+                  Strict
+                </Button>
+              </div>
+            </div>
             <div className="flex flex-col gap-4 lg:flex-row lg:items-end">
               <div className="space-y-2">
                 <p className="text-xs text-zinc-400 uppercase tracking-wider">Segments</p>
@@ -187,18 +267,40 @@ export default function StrategyLabPage() {
                 />
               </div>
               <div className="space-y-2 w-full lg:w-48">
-                <p className="text-xs text-zinc-400 uppercase tracking-wider">Lookback Days (3-14)</p>
+                <p className="text-xs text-zinc-400 uppercase tracking-wider">Lookback Days (7-365)</p>
                 <Input
                   type="number"
-                  min={3}
-                  max={14}
+                  min={7}
+                  max={365}
                   value={days}
                   onChange={(event) => {
                     const parsed = Number.parseInt(event.target.value, 10);
                     if (Number.isNaN(parsed)) return;
-                    setDays(Math.min(14, Math.max(3, parsed)));
+                    setDays(Math.min(365, Math.max(7, parsed)));
                   }}
                 />
+              </div>
+              <div className="space-y-2 w-full lg:w-80">
+                <p className="text-xs text-zinc-400 uppercase tracking-wider">Open Cached Run</p>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={runIdInput}
+                    placeholder="Paste run id"
+                    onChange={(event) => setRunIdInput(event.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      if (!runIdInput.trim()) return;
+                      void fetchRunStatus(runIdInput.trim()).catch((runError) => {
+                        setError(runError instanceof Error ? runError.message : "Failed to load run");
+                      });
+                    }}
+                  >
+                    Open
+                  </Button>
+                </div>
               </div>
               <Button onClick={() => void fetchLab(true)} disabled={loading}>
                 {loading ? "Running..." : "Run Test"}
@@ -207,8 +309,15 @@ export default function StrategyLabPage() {
             {data && (
               <p className="text-xs text-zinc-500">
                 Window: {formatDateRange(data.from, data.to)} ({data.days} days)
+                {` • Profile: ${data.profile}`}
                 {typeof data.pageSize === "number" ? ` • Page size: ${data.pageSize}` : ""}
               </p>
+            )}
+            {activeRunId && activeRunStatus && activeRunStatus !== "COMPLETED" && (
+              <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-200 flex items-center gap-2">
+                <LoaderCircle className="size-3 animate-spin" />
+                Async run {activeRunId} is {activeRunStatus}. Polling for completion...
+              </div>
             )}
           </CardContent>
         </Card>
@@ -239,7 +348,11 @@ export default function StrategyLabPage() {
             <StatCard
               label="Top Strategy"
               value={topOverall ? topOverall.strategyName : "N/A"}
-              subValue={topOverall ? `${topOverall.segment} | Score ${topOverall.score}` : "No ranking yet"}
+              subValue={
+                topOverall
+                  ? `${topOverall.segment} | Final ${topOverall.score} | Base ${topOverall.baseScore}`
+                  : "No ranking yet"
+              }
               icon={Trophy}
               trend="up"
             />
@@ -258,8 +371,8 @@ export default function StrategyLabPage() {
             />
             <StatCard
               label="Risk-Adjusted Focus"
-              value="Net R / Drawdown"
-              subValue="Composite ranking with drawdown penalty"
+              value="Consistency-Aware Score"
+              subValue="Base performance + rolling weekly stability"
               icon={FlaskConical}
             />
           </div>
@@ -278,18 +391,22 @@ export default function StrategyLabPage() {
                     <TableHead>Strategy</TableHead>
                     <TableHead>Segment</TableHead>
                     <TableHead>Quality</TableHead>
-                    <TableHead className="text-right">Score</TableHead>
+                    <TableHead className="text-right">Final</TableHead>
+                    <TableHead className="text-right">Base</TableHead>
+                    <TableHead className="text-right">Consistency</TableHead>
                     <TableHead className="text-right">Net R</TableHead>
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Profit Factor</TableHead>
                     <TableHead className="text-right">Max DD (R)</TableHead>
                     <TableHead className="text-right">Trades</TableHead>
+                    <TableHead className="text-right">Trades/Day</TableHead>
+                    <TableHead className="text-right">Positive Weeks</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {!data?.overallRanking?.length ? (
                     <TableRow>
-                      <TableCell colSpan={10} className="text-center text-zinc-500 py-8">
+                      <TableCell colSpan={14} className="text-center text-zinc-500 py-8">
                         {loading ? "Running strategy tests..." : "No ranking data available."}
                       </TableCell>
                     </TableRow>
@@ -307,6 +424,8 @@ export default function StrategyLabPage() {
                           </Badge>
                         </TableCell>
                         <TableCell className="text-right font-semibold">{formatNumber(item.score, 2)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.baseScore, 2)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.consistencyScore, 2)}</TableCell>
                         <TableCell
                           className={`text-right ${
                             item.kpis.netR >= 0 ? "text-emerald-400" : "text-red-400"
@@ -318,6 +437,10 @@ export default function StrategyLabPage() {
                         <TableCell className="text-right">{formatNumber(item.kpis.profitFactor, 2)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.kpis.maxDrawdownR, 2)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.kpis.trades, 0)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.kpis.trades / Math.max(1, data.days), 2)}</TableCell>
+                        <TableCell className="text-right">
+                          {formatNumber(item.consistency.positiveWindowRate, 1)}%
+                        </TableCell>
                       </TableRow>
                     ))
                   )}
@@ -356,6 +479,10 @@ export default function StrategyLabPage() {
                         <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-400">
                           <span>Score: {formatNumber(best.score, 2)}</span>
                           <span>•</span>
+                          <span>Base: {formatNumber(best.baseScore, 2)}</span>
+                          <span>•</span>
+                          <span>Consistency: {formatNumber(best.consistencyScore, 2)}</span>
+                          <span>•</span>
                           <span>Win: {formatPct(best.kpis.winRate)}</span>
                           <span>•</span>
                           <span>Net R: {formatNumber(best.kpis.netR, 2)}</span>
@@ -373,12 +500,67 @@ export default function StrategyLabPage() {
                           <span>•</span>
                           <span>OI Pages: {formatNumber(segmentSummary.diagnostics.oiPagesFetched, 0)}</span>
                         </div>
+                        <div className="mt-2 text-[11px] text-zinc-500 space-y-1">
+                          <p>
+                            Entries: {best.activity.entriesTaken} / Candidates: {best.activity.signalCandidates}
+                            {" • "}
+                            Blocked (spacing/risk/day): {best.activity.blockedBySpacing}/
+                            {best.activity.blockedByRiskFilter}/{best.activity.blockedByDailyRisk}
+                          </p>
+                          <p>Top rejection: {topRejectionReason(best.activity.rejectionReasons)}</p>
+                        </div>
                       </>
                     )}
                   </div>
                 );
               })
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">Why Low Trades Diagnostics</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg border border-zinc-800 overflow-auto">
+              <Table className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>Strategy</TableHead>
+                    <TableHead>Segment</TableHead>
+                    <TableHead className="text-right">Trades</TableHead>
+                    <TableHead className="text-right">Candidates</TableHead>
+                    <TableHead className="text-right">Blocked Spacing</TableHead>
+                    <TableHead className="text-right">Blocked Daily Risk</TableHead>
+                    <TableHead className="text-right">Blocked Risk Filter</TableHead>
+                    <TableHead>Top Rejection</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {!lowTradeDiagnostics.length ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center text-zinc-500 py-6">
+                        No low-trade rows in the current result set.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    lowTradeDiagnostics.map((item) => (
+                      <TableRow key={`${item.segment}_${item.strategyId}_diag`}>
+                        <TableCell>{item.strategyName}</TableCell>
+                        <TableCell>{item.segment}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.kpis.trades, 0)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.activity.signalCandidates, 0)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.activity.blockedBySpacing, 0)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.activity.blockedByDailyRisk, 0)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.activity.blockedByRiskFilter, 0)}</TableCell>
+                        <TableCell>{topRejectionReason(item.activity.rejectionReasons)}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
           </CardContent>
         </Card>
       </main>

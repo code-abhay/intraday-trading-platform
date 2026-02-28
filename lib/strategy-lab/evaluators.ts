@@ -8,22 +8,29 @@ import {
   crossedAbove,
   crossedBelow,
   ema,
+  fibLevelsFromRange,
   highest,
   lowest,
   macd,
   obv,
+  parabolicSar,
   resampleCandles,
   rsi,
   sessionVWAP,
   sma,
+  stochastic,
   supertrend,
 } from "@/lib/strategy-lab/indicators";
 import { STRATEGY_LAB_RULES, STRATEGY_LAB_RULES_BY_ID } from "@/lib/strategy-lab/rules";
 import type {
+  ExecutionProfile,
   LabCandle,
   LabOIBuildupPoint,
   LabSnapshot,
+  RollingWindowEvaluation,
   SimulatedTrade,
+  StrategyActivityDiagnostics,
+  StrategyConsistencyMetrics,
   StrategyEvaluation,
   StrategyId,
   StrategyKpis,
@@ -43,6 +50,13 @@ interface SignalCandidate {
   validateWithinBars?: number;
   postEntryAdxMin?: number;
 }
+
+type SignalDetectionResult =
+  | SignalCandidate
+  | {
+      candidate: null;
+      rejectionReason: string;
+    };
 
 interface HigherAlignedSeries {
   ema9: number[];
@@ -73,6 +87,10 @@ interface PreparedSeries {
   obv: number[];
   supertrendLine: number[];
   supertrendTrend: Array<1 | -1>;
+  sar: number[];
+  sarTrend: Array<1 | -1>;
+  stochasticK: number[];
+  stochasticD: number[];
   vwap: number[];
   volumeSma20: number[];
   snapshotsAligned: Array<LabSnapshot | null>;
@@ -98,6 +116,11 @@ interface ActiveTrade {
   requiredAdxAfterEntry?: number;
 }
 
+interface SimulateResult {
+  trades: SimulatedTrade[];
+  activity: StrategyActivityDiagnostics;
+}
+
 function toMs(time: string): number {
   const t = new Date(time).getTime();
   return Number.isNaN(t) ? 0 : t;
@@ -109,6 +132,75 @@ function dateKey(time: string): string {
 
 function round2(value: number): number {
   return Number.isFinite(value) ? Math.round(value * 100) / 100 : 0;
+}
+
+function median(values: number[]): number {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  if (sorted.length % 2 === 1) return sorted[mid];
+  return (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function stdDev(values: number[]): number {
+  if (values.length < 2) return 0;
+  const mean = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const variance =
+    values.reduce((sum, value) => sum + (value - mean) ** 2, 0) /
+    Math.max(1, values.length - 1);
+  return Math.sqrt(variance);
+}
+
+function adjusted(profile: ExecutionProfile, strictValue: number, balancedValue: number): number {
+  return profile === "strict" ? strictValue : balancedValue;
+}
+
+function countTrue(values: boolean[]): number {
+  return values.filter(Boolean).length;
+}
+
+function passesChecks(
+  profile: ExecutionProfile,
+  checks: boolean[],
+  requiredIndexes: number[],
+  strictMin: number,
+  balancedMin: number
+): boolean {
+  for (const idx of requiredIndexes) {
+    if (!checks[idx]) return false;
+  }
+  const minNeeded = profile === "strict" ? strictMin : balancedMin;
+  return countTrue(checks) >= minNeeded;
+}
+
+function istMinutesFromStart(candleTime: string): number {
+  const date = new Date(candleTime);
+  const ms = date.getTime();
+  if (Number.isNaN(ms)) return 0;
+  const ist = new Date(ms + 330 * 60 * 1000);
+  const totalMinutes = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const sessionStart = 9 * 60 + 15;
+  return totalMinutes - sessionStart;
+}
+
+function getWindowBounds(fromIso: string, toIso: string): Array<{ from: string; to: string }> {
+  const fromMs = toMs(fromIso);
+  const toMsValue = toMs(toIso);
+  if (!Number.isFinite(fromMs) || !Number.isFinite(toMsValue) || toMsValue <= fromMs) {
+    return [];
+  }
+  const weekMs = 7 * 24 * 60 * 60 * 1000;
+  const windows: Array<{ from: string; to: string }> = [];
+  let currentFrom = fromMs;
+  while (currentFrom < toMsValue) {
+    const currentTo = Math.min(toMsValue, currentFrom + weekMs);
+    windows.push({
+      from: new Date(currentFrom).toISOString(),
+      to: new Date(currentTo).toISOString(),
+    });
+    currentFrom += weekMs;
+  }
+  return windows;
 }
 
 function alignByTime<T extends { time: string }>(
@@ -200,6 +292,12 @@ function prepareSeries(
     Math.max(7, Math.round(rule.engine.params.supertrendAtrPeriod ?? 10)),
     Math.max(1.5, rule.engine.params.supertrendFactor ?? 3)
   );
+  const sarSeries = parabolicSar(
+    candles,
+    Math.max(0.01, rule.engine.params.sarStep ?? 0.02),
+    Math.max(0.1, rule.engine.params.sarMax ?? 0.2)
+  );
+  const stoch = stochastic(candles, 14, 3, 3);
   const vwap = sessionVWAP(candles);
   const volumeSma20 = sma(volume, 20);
 
@@ -230,6 +328,10 @@ function prepareSeries(
     obv: obvSeries,
     supertrendLine: st.line,
     supertrendTrend: st.trend,
+    sar: sarSeries.sar,
+    sarTrend: sarSeries.trend,
+    stochasticK: stoch.k,
+    stochasticD: stoch.d,
     vwap,
     volumeSma20,
     snapshotsAligned: alignByTime(timeMs, snapshots),
@@ -265,9 +367,10 @@ function detectSignal(
   strategyId: StrategyId,
   series: PreparedSeries,
   rule: StrategyRuleSpec,
-  i: number
-): SignalCandidate | null {
-  if (i < 3) return null;
+  i: number,
+  profile: ExecutionProfile
+): SignalDetectionResult {
+  if (i < 3) return { candidate: null, rejectionReason: "insufficient_bars" };
   const close = series.close[i];
   const low = series.low[i];
   const high = series.high[i];
@@ -281,21 +384,28 @@ function detectSignal(
   const macdLine = series.macdLine;
   const macdSignal = series.macdSignal;
 
-  const higherBullish = rule.engine.higherIntervalsMin.every((tf) => {
+  const higherBullMatches = rule.engine.higherIntervalsMin.filter((tf) => {
     const h = series.higher[tf];
-    return h && h.ema9[i] > h.ema21[i] && h.close[i] >= h.ema21[i];
+    return Boolean(h && h.ema9[i] > h.ema21[i] && h.close[i] >= h.ema21[i]);
   });
-  const higherBearish = rule.engine.higherIntervalsMin.every((tf) => {
+  const higherBearMatches = rule.engine.higherIntervalsMin.filter((tf) => {
     const h = series.higher[tf];
-    return h && h.ema9[i] < h.ema21[i] && h.close[i] <= h.ema21[i];
+    return Boolean(h && h.ema9[i] < h.ema21[i] && h.close[i] <= h.ema21[i]);
   });
+  const requiredHigher = profile === "strict"
+    ? rule.engine.higherIntervalsMin.length
+    : Math.max(1, Math.ceil(rule.engine.higherIntervalsMin.length * 0.6));
+  const higherBullish = higherBullMatches.length >= requiredHigher;
+  const higherBearish = higherBearMatches.length >= requiredHigher;
 
   switch (strategyId) {
     case "ema_macd_trend_acceleration": {
-      const minAdx = rule.engine.params.minAdx ?? 25;
-      const invalidationAdx = rule.engine.params.invalidationAdx ?? 20;
-      const minSlope = rule.engine.params.minMacdHistSlope ?? 0.02;
-      if (adxNow < invalidationAdx) return null;
+      const minAdx = adjusted(profile, rule.engine.params.minAdx ?? 25, 20);
+      const invalidationAdx = adjusted(profile, rule.engine.params.invalidationAdx ?? 20, 16);
+      const minSlope = adjusted(profile, rule.engine.params.minMacdHistSlope ?? 0.02, 0);
+      if (adxNow < invalidationAdx) {
+        return { candidate: null, rejectionReason: "adx_too_low" };
+      }
 
       const longChecks = [
         higherBullish,
@@ -304,7 +414,7 @@ function detectSignal(
         macdHistNow > 0 && macdHistNow > macdHistPrev + minSlope,
         crossedAbove(macdLine, macdSignal, i) || macdLine[i] > macdSignal[i],
       ];
-      if (longChecks.every(Boolean)) {
+      if (passesChecks(profile, longChecks, [0, 1], longChecks.length, 4)) {
         const swingLow = lowest(series.low, i, 6);
         const stop = Math.min(swingLow, close - atrNow * rule.engine.stopAtrMult);
         return {
@@ -323,7 +433,7 @@ function detectSignal(
         macdHistNow < 0 && macdHistNow < macdHistPrev - minSlope,
         crossedBelow(macdLine, macdSignal, i) || macdLine[i] < macdSignal[i],
       ];
-      if (shortChecks.every(Boolean)) {
+      if (passesChecks(profile, shortChecks, [0, 1], shortChecks.length, 4)) {
         const swingHigh = highest(series.high, i, 6);
         const stop = Math.max(swingHigh, close + atrNow * rule.engine.stopAtrMult);
         return {
@@ -335,12 +445,12 @@ function detectSignal(
         };
       }
 
-      return null;
+      return { candidate: null, rejectionReason: "trend_acceleration_confluence_missing" };
     }
 
     case "supertrend_adx_continuation": {
-      const minAdx = rule.engine.params.minAdx ?? 24;
-      const higherTfAdx = rule.engine.params.higherTfAdx ?? 30;
+      const minAdx = adjusted(profile, rule.engine.params.minAdx ?? 24, 20);
+      const higherTfAdx = adjusted(profile, rule.engine.params.higherTfAdx ?? 30, 24);
       const h60 = series.higher[60];
       const h60Bull = !h60 || (h60.ema9[i] > h60.ema21[i] && h60.adx[i] >= higherTfAdx);
       const h60Bear = !h60 || (h60.ema9[i] < h60.ema21[i] && h60.adx[i] >= higherTfAdx);
@@ -355,7 +465,7 @@ function detectSignal(
         close > ema21Now,
         close > (series.high[i - 1] ?? close),
       ];
-      if (longChecks.every(Boolean)) {
+      if (passesChecks(profile, longChecks, [1, 3], longChecks.length, 4)) {
         const stop = Math.min(
           series.supertrendLine[i] ?? close - atrNow,
           close - atrNow * rule.engine.stopAtrMult
@@ -376,7 +486,7 @@ function detectSignal(
         close < ema21Now,
         close < (series.low[i - 1] ?? close),
       ];
-      if (shortChecks.every(Boolean)) {
+      if (passesChecks(profile, shortChecks, [1, 3], shortChecks.length, 4)) {
         const stop = Math.max(
           series.supertrendLine[i] ?? close + atrNow,
           close + atrNow * rule.engine.stopAtrMult
@@ -390,14 +500,14 @@ function detectSignal(
         };
       }
 
-      return null;
+      return { candidate: null, rejectionReason: "supertrend_confluence_missing" };
     }
 
     case "vwap_delta_reversion": {
-      const stretch = rule.engine.params.vwapStretchAtr ?? 1;
+      const stretch = adjusted(profile, rule.engine.params.vwapStretchAtr ?? 1, 0.8);
       const divLookback = Math.round(rule.engine.params.rsiDivergenceLookback ?? 18);
-      const pcrUpper = rule.engine.params.pcrUpperExtreme ?? 1.3;
-      const pcrLower = rule.engine.params.pcrLowerExtreme ?? 0.75;
+      const pcrUpper = adjusted(profile, rule.engine.params.pcrUpperExtreme ?? 1.3, 1.2);
+      const pcrLower = adjusted(profile, rule.engine.params.pcrLowerExtreme ?? 0.75, 0.8);
       const snapshot = series.snapshotsAligned[i];
       const pcr = snapshot?.pcr ?? null;
 
@@ -428,7 +538,7 @@ function detectSignal(
         flowBearish,
         macdHistNow > macdHistPrev,
       ];
-      if (longChecks.every(Boolean)) {
+      if (passesChecks(profile, longChecks, [0, 1], longChecks.length, 3)) {
         const stop = lowest(series.low, i, 5) - atrNow * 0.4;
         return {
           direction: "LONG",
@@ -446,7 +556,7 @@ function detectSignal(
         flowBullish,
         macdHistNow < macdHistPrev,
       ];
-      if (shortChecks.every(Boolean)) {
+      if (passesChecks(profile, shortChecks, [0, 1], shortChecks.length, 3)) {
         const stop = highest(series.high, i, 5) + atrNow * 0.4;
         return {
           direction: "SHORT",
@@ -457,14 +567,14 @@ function detectSignal(
         };
       }
 
-      return null;
+      return { candidate: null, rejectionReason: "vwap_reversion_confluence_missing" };
     }
 
     case "gamma_expansion_breakout": {
-      const squeezeWidth = rule.engine.params.squeezeBandwidthPct ?? 0.015;
+      const squeezeWidth = adjusted(profile, rule.engine.params.squeezeBandwidthPct ?? 0.015, 0.02);
       const adxPreMax = rule.engine.params.preBreakAdxMax ?? 20;
-      const adxPostMin = rule.engine.params.postBreakAdxMin ?? 25;
-      const volMult = rule.engine.params.breakoutVolumeMult ?? 1.5;
+      const adxPostMin = adjusted(profile, rule.engine.params.postBreakAdxMin ?? 25, 20);
+      const volMult = adjusted(profile, rule.engine.params.breakoutVolumeMult ?? 1.5, 1.1);
 
       const bw = series.bollingerWidthPct[i] ?? 1;
       const isSqueeze = bw <= squeezeWidth;
@@ -486,7 +596,7 @@ function detectSignal(
         volumeConfirmed,
         h15Bull,
       ];
-      if (longChecks.every(Boolean)) {
+      if (passesChecks(profile, longChecks, [0, 3], longChecks.length, 5)) {
         const stop = Math.min(
           series.ema21[i] - atrNow * rule.engine.stopAtrMult,
           low - atrNow * 0.2
@@ -512,7 +622,7 @@ function detectSignal(
         volumeConfirmed,
         h15Bear,
       ];
-      if (shortChecks.every(Boolean)) {
+      if (passesChecks(profile, shortChecks, [0, 3], shortChecks.length, 5)) {
         const stop = Math.max(
           series.ema21[i] + atrNow * rule.engine.stopAtrMult,
           high + atrNow * 0.2
@@ -528,16 +638,16 @@ function detectSignal(
         };
       }
 
-      return null;
+      return { candidate: null, rejectionReason: "gamma_breakout_confluence_missing" };
     }
 
     case "pcr_oi_sentiment_reversal": {
-      const pcrUpper = rule.engine.params.pcrUpperExtreme ?? 1.35;
-      const pcrLower = rule.engine.params.pcrLowerExtreme ?? 0.72;
-      const minRsiLong = rule.engine.params.minRsiForLongRecovery ?? 32;
-      const maxRsiShort = rule.engine.params.maxRsiForShortFade ?? 68;
+      const pcrUpper = adjusted(profile, rule.engine.params.pcrUpperExtreme ?? 1.35, 1.2);
+      const pcrLower = adjusted(profile, rule.engine.params.pcrLowerExtreme ?? 0.72, 0.82);
+      const minRsiLong = adjusted(profile, rule.engine.params.minRsiForLongRecovery ?? 32, 30);
+      const maxRsiShort = adjusted(profile, rule.engine.params.maxRsiForShortFade ?? 68, 70);
       const snapshot = series.snapshotsAligned[i];
-      if (!snapshot?.pcr) return null;
+      if (!snapshot?.pcr) return { candidate: null, rejectionReason: "missing_pcr_data" };
       const oi = series.oiAligned[i];
       const pcr = snapshot.pcr;
       const shortPressure =
@@ -552,7 +662,7 @@ function detectSignal(
         macdHistNow > macdHistPrev,
         close > ema9Now && ema9Now > ema21Now,
       ];
-      if (longChecks.every(Boolean)) {
+      if (passesChecks(profile, longChecks, [0], longChecks.length, 4)) {
         const stop = lowest(series.low, i, 8) - atrNow * rule.engine.stopAtrMult;
         return {
           direction: "LONG",
@@ -570,7 +680,7 @@ function detectSignal(
         macdHistNow < macdHistPrev,
         close < ema9Now && ema9Now < ema21Now,
       ];
-      if (shortChecks.every(Boolean)) {
+      if (passesChecks(profile, shortChecks, [0], shortChecks.length, 4)) {
         const stop = highest(series.high, i, 8) + atrNow * rule.engine.stopAtrMult;
         return {
           direction: "SHORT",
@@ -581,10 +691,227 @@ function detectSignal(
         };
       }
 
-      return null;
+      return { candidate: null, rejectionReason: "pcr_reversal_confluence_missing" };
+    }
+
+    case "rsi_divergence_stochastic_reversal": {
+      const divLookback = Math.round(rule.engine.params.divergenceLookback ?? 18);
+      const stochOversold = adjusted(profile, rule.engine.params.stochOversold ?? 20, 30);
+      const stochOverbought = adjusted(profile, rule.engine.params.stochOverbought ?? 80, 70);
+      const bullDiv = bullishDivergence(series.low, series.rsi14, i, divLookback);
+      const bearDiv = bearishDivergence(series.high, series.rsi14, i, divLookback);
+      const stochBullCross =
+        series.stochasticK[i] > series.stochasticD[i] &&
+        series.stochasticK[i - 1] <= series.stochasticD[i - 1] &&
+        series.stochasticK[i] <= stochOversold + 10;
+      const stochBearCross =
+        series.stochasticK[i] < series.stochasticD[i] &&
+        series.stochasticK[i - 1] >= series.stochasticD[i - 1] &&
+        series.stochasticK[i] >= stochOverbought - 10;
+
+      const longChecks = [
+        higherBullish,
+        bullDiv,
+        stochBullCross || series.stochasticK[i] <= stochOversold,
+        close > ema9Now,
+        macdHistNow > macdHistPrev,
+      ];
+      if (passesChecks(profile, longChecks, [1], longChecks.length, 3)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(55, longChecks),
+          reason: "RSI divergence reversal with stochastic confirmation",
+          stopLoss: lowest(series.low, i, 6) - atrNow * 0.5,
+          trailingMode: "EMA21",
+        };
+      }
+
+      const shortChecks = [
+        higherBearish,
+        bearDiv,
+        stochBearCross || series.stochasticK[i] >= stochOverbought,
+        close < ema9Now,
+        macdHistNow < macdHistPrev,
+      ];
+      if (passesChecks(profile, shortChecks, [1], shortChecks.length, 3)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(55, shortChecks),
+          reason: "RSI divergence reversal with stochastic confirmation",
+          stopLoss: highest(series.high, i, 6) + atrNow * 0.5,
+          trailingMode: "EMA21",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "rsi_stoch_reversal_missing" };
+    }
+
+    case "sar_vwap_opening_drive": {
+      const cutoffMin = Math.round(rule.engine.params.openingCutoffMin ?? 120);
+      const volumeMult = adjusted(profile, rule.engine.params.openingVolumeMult ?? 1.2, 1.05);
+      const minutesFromOpen = istMinutesFromStart(series.candles[i].time);
+      if (minutesFromOpen < 0 || minutesFromOpen > cutoffMin) {
+        return { candidate: null, rejectionReason: "outside_opening_window" };
+      }
+
+      const sarFlipBull = series.sarTrend[i] === 1 && series.sarTrend[i - 1] === -1;
+      const sarFlipBear = series.sarTrend[i] === -1 && series.sarTrend[i - 1] === 1;
+      const volumeConfirmed = (series.volume[i] ?? 0) > (series.volumeSma20[i] ?? 0) * volumeMult;
+      const obvUp = series.obv[i] > (series.obv[i - 1] ?? series.obv[i]);
+      const obvDown = series.obv[i] < (series.obv[i - 1] ?? series.obv[i]);
+
+      const longChecks = [
+        higherBullish,
+        sarFlipBull,
+        close > series.vwap[i],
+        volumeConfirmed,
+        obvUp,
+      ];
+      if (passesChecks(profile, longChecks, [1, 2], longChecks.length, 4)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(58, longChecks),
+          reason: "Opening drive long with SAR flip and VWAP hold",
+          stopLoss: Math.min(series.sar[i], low - atrNow * 0.2),
+          trailingMode: "SUPERTREND",
+        };
+      }
+
+      const shortChecks = [
+        higherBearish,
+        sarFlipBear,
+        close < series.vwap[i],
+        volumeConfirmed,
+        obvDown,
+      ];
+      if (passesChecks(profile, shortChecks, [1, 2], shortChecks.length, 4)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(58, shortChecks),
+          reason: "Opening drive short with SAR flip and VWAP rejection",
+          stopLoss: Math.max(series.sar[i], high + atrNow * 0.2),
+          trailingMode: "SUPERTREND",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "sar_vwap_opening_missing" };
+    }
+
+    case "stochastic_macd_range_crossover": {
+      const adxRangeMax = adjusted(profile, rule.engine.params.adxRangeMax ?? 20, 24);
+      const stochOversold = adjusted(profile, rule.engine.params.stochOversold ?? 25, 30);
+      const stochOverbought = adjusted(profile, rule.engine.params.stochOverbought ?? 75, 70);
+      const isRangeRegime = adxNow <= adxRangeMax && Math.abs(close - series.vwap[i]) <= atrNow * 1.3;
+
+      const stochCrossUp =
+        series.stochasticK[i] > series.stochasticD[i] &&
+        series.stochasticK[i - 1] <= series.stochasticD[i - 1] &&
+        series.stochasticK[i] <= stochOversold + 12;
+      const stochCrossDown =
+        series.stochasticK[i] < series.stochasticD[i] &&
+        series.stochasticK[i - 1] >= series.stochasticD[i - 1] &&
+        series.stochasticK[i] >= stochOverbought - 12;
+
+      const macdCrossUp = crossedAbove(macdLine, macdSignal, i) || macdLine[i] > macdSignal[i];
+      const macdCrossDown = crossedBelow(macdLine, macdSignal, i) || macdLine[i] < macdSignal[i];
+
+      const longChecks = [
+        isRangeRegime,
+        stochCrossUp || series.stochasticK[i] <= stochOversold,
+        macdCrossUp,
+        macdHistNow >= macdHistPrev,
+      ];
+      if (passesChecks(profile, longChecks, [0, 1], longChecks.length, 3)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(52, longChecks),
+          reason: "Range bounce with stochastic and MACD alignment",
+          stopLoss: lowest(series.low, i, 6) - atrNow * 0.4,
+          trailingMode: "EMA9",
+        };
+      }
+
+      const shortChecks = [
+        isRangeRegime,
+        stochCrossDown || series.stochasticK[i] >= stochOverbought,
+        macdCrossDown,
+        macdHistNow <= macdHistPrev,
+      ];
+      if (passesChecks(profile, shortChecks, [0, 1], shortChecks.length, 3)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(52, shortChecks),
+          reason: "Range fade with stochastic and MACD alignment",
+          stopLoss: highest(series.high, i, 6) + atrNow * 0.4,
+          trailingMode: "EMA9",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "range_crossover_missing" };
+    }
+
+    case "fib_orderflow_continuation": {
+      const lookbackBars = Math.max(20, Math.round(rule.engine.params.fibLookbackBars ?? 40));
+      const toleranceAtr = adjusted(profile, rule.engine.params.fibZoneToleranceAtr ?? 0.3, 0.5);
+      const pcrBullMin = adjusted(profile, rule.engine.params.pcrTrendBullMin ?? 1, 0.95);
+      const pcrBearMax = adjusted(profile, rule.engine.params.pcrTrendBearMax ?? 1, 1.05);
+      const swingHigh = highest(series.high, i, lookbackBars);
+      const swingLow = lowest(series.low, i, lookbackBars);
+      const fib = fibLevelsFromRange(swingHigh, swingLow);
+      const nearBullZone =
+        Math.abs(close - fib.level50) <= atrNow * toleranceAtr ||
+        Math.abs(close - fib.level618) <= atrNow * toleranceAtr;
+      const nearBearZone =
+        Math.abs(close - (swingLow + (swingHigh - swingLow) * 0.5)) <= atrNow * toleranceAtr ||
+        Math.abs(close - (swingLow + (swingHigh - swingLow) * 0.618)) <= atrNow * toleranceAtr;
+      const snapshot = series.snapshotsAligned[i];
+      const pcr = snapshot?.pcr ?? null;
+      const superBull = series.supertrendTrend[i] === 1;
+      const superBear = series.supertrendTrend[i] === -1;
+      const macdBull = crossedAbove(macdLine, macdSignal, i) || macdLine[i] > macdSignal[i];
+      const macdBear = crossedBelow(macdLine, macdSignal, i) || macdLine[i] < macdSignal[i];
+
+      const longChecks = [
+        higherBullish,
+        superBull,
+        nearBullZone,
+        macdBull,
+        pcr == null || pcr >= pcrBullMin,
+      ];
+      if (passesChecks(profile, longChecks, [0, 2], longChecks.length, 4)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(57, longChecks),
+          reason: "Trend continuation at fib pullback zone",
+          stopLoss: Math.min(fib.level786, lowest(series.low, i, 8)) - atrNow * 0.25,
+          trailingMode: "SUPERTREND",
+        };
+      }
+
+      const shortChecks = [
+        higherBearish,
+        superBear,
+        nearBearZone,
+        macdBear,
+        pcr == null || pcr <= pcrBearMax,
+      ];
+      if (passesChecks(profile, shortChecks, [0, 2], shortChecks.length, 4)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(57, shortChecks),
+          reason: "Trend continuation short at fib pullback zone",
+          stopLoss: Math.max(
+            swingLow + (swingHigh - swingLow) * 0.786,
+            highest(series.high, i, 8)
+          ) + atrNow * 0.25,
+          trailingMode: "SUPERTREND",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "fib_continuation_missing" };
     }
     default:
-      return null;
+      return { candidate: null, rejectionReason: "unsupported_strategy" };
   }
 }
 
@@ -678,16 +1005,47 @@ function simulateStrategy(
   strategyId: StrategyId,
   candlesOneMinute: LabCandle[],
   snapshots: LabSnapshot[],
-  oiPoints: LabOIBuildupPoint[]
-): SimulatedTrade[] {
+  oiPoints: LabOIBuildupPoint[],
+  profile: ExecutionProfile
+): SimulateResult {
   const rule = STRATEGY_LAB_RULES_BY_ID[strategyId];
   const series = prepareSeries(candlesOneMinute, snapshots, oiPoints, rule);
-  if (!series) return [];
+  if (!series) {
+    return {
+      trades: [],
+      activity: {
+        barsEvaluated: 0,
+        signalCandidates: 0,
+        entriesTaken: 0,
+        blockedByDailyRisk: 0,
+        blockedBySpacing: 0,
+        blockedByRiskFilter: 0,
+        rejectionReasons: {},
+      },
+    };
+  }
 
   const trades: SimulatedTrade[] = [];
   const dailyRiskUsed = new Map<string, number>();
   let active: ActiveTrade | null = null;
   let lastExitIndex = -1000;
+  const activity: StrategyActivityDiagnostics = {
+    barsEvaluated: 0,
+    signalCandidates: 0,
+    entriesTaken: 0,
+    blockedByDailyRisk: 0,
+    blockedBySpacing: 0,
+    blockedByRiskFilter: 0,
+    rejectionReasons: {},
+  };
+  const effectiveRiskPerTrade =
+    profile === "strict" ? rule.engine.riskPerTradePct : rule.engine.riskPerTradePct * 0.85;
+  const effectiveDailyRiskCap =
+    profile === "strict" ? rule.engine.dailyRiskCapPct : rule.engine.dailyRiskCapPct * 1.25;
+  const effectiveMinBarsBetweenTrades =
+    profile === "strict"
+      ? rule.engine.minBarsBetweenTrades
+      : Math.max(1, rule.engine.minBarsBetweenTrades - 1);
 
   for (let i = 35; i < series.candles.length; i++) {
     const day = dateKey(series.candles[i].time);
@@ -761,18 +1119,34 @@ function simulateStrategy(
     }
 
     if (active) continue;
-    if (i - lastExitIndex < rule.engine.minBarsBetweenTrades) continue;
+    activity.barsEvaluated += 1;
+    if (i - lastExitIndex < effectiveMinBarsBetweenTrades) {
+      activity.blockedBySpacing += 1;
+      continue;
+    }
 
     const usedRisk = dailyRiskUsed.get(day) ?? 0;
-    if (usedRisk + rule.engine.riskPerTradePct > rule.engine.dailyRiskCapPct) continue;
+    if (usedRisk + effectiveRiskPerTrade > effectiveDailyRiskCap) {
+      activity.blockedByDailyRisk += 1;
+      continue;
+    }
 
-    const candidate = detectSignal(strategyId, series, rule, i);
-    if (!candidate) continue;
+    const detection = detectSignal(strategyId, series, rule, i, profile);
+    if ("candidate" in detection) {
+      activity.rejectionReasons[detection.rejectionReason] =
+        (activity.rejectionReasons[detection.rejectionReason] ?? 0) + 1;
+      continue;
+    }
+    const candidate = detection;
+    activity.signalCandidates += 1;
 
     const entry = series.close[i];
     const stop = resolveStop(candidate.direction, entry, candidate.stopLoss);
     const risk = Math.abs(entry - stop);
-    if (!Number.isFinite(risk) || risk <= Math.max(0.05, entry * 0.0002)) continue;
+    if (!Number.isFinite(risk) || risk <= Math.max(0.05, entry * 0.0002)) {
+      activity.blockedByRiskFilter += 1;
+      continue;
+    }
 
     const takeProfit =
       candidate.direction === "LONG"
@@ -798,7 +1172,8 @@ function simulateStrategy(
       requiredAdxAfterEntry: candidate.postEntryAdxMin,
     };
 
-    dailyRiskUsed.set(day, usedRisk + rule.engine.riskPerTradePct);
+    dailyRiskUsed.set(day, usedRisk + effectiveRiskPerTrade);
+    activity.entriesTaken += 1;
   }
 
   if (active) {
@@ -807,7 +1182,7 @@ function simulateStrategy(
     trades.push(finalizeTrade(active, finalIndex, finalClose, "Range end", series));
   }
 
-  return trades;
+  return { trades, activity };
 }
 
 function computeMaxDrawdownR(values: number[]): number {
@@ -891,24 +1266,116 @@ export function computeEvaluationScore(
   return round2(score);
 }
 
+function computeRollingWindows(
+  trades: SimulatedTrade[],
+  fromIso: string,
+  toIso: string,
+  quality: StrategyRuleSpec["qualityRating"]
+): RollingWindowEvaluation[] {
+  const bounds = getWindowBounds(fromIso, toIso);
+  if (!bounds.length) return [];
+  return bounds.map((bound) => {
+    const fromMs = toMs(bound.from);
+    const toMsValue = toMs(bound.to);
+    const windowTrades = trades.filter((trade) => {
+      const t = toMs(trade.entryTime);
+      return t >= fromMs && t < toMsValue;
+    });
+    const kpis = computeKpis(windowTrades);
+    const score = computeEvaluationScore(kpis, quality);
+    return {
+      from: bound.from,
+      to: bound.to,
+      kpis,
+      score,
+    };
+  });
+}
+
+function computeConsistency(
+  windows: RollingWindowEvaluation[]
+): StrategyConsistencyMetrics {
+  if (!windows.length) {
+    return {
+      windows: 0,
+      positiveWindows: 0,
+      positiveWindowRate: 0,
+      medianNetR: 0,
+      netRStdDev: 0,
+      consistencyScore: 0,
+    };
+  }
+  const netRs = windows.map((windowItem) => windowItem.kpis.netR);
+  const positiveWindows = netRs.filter((value) => value > 0).length;
+  const positiveWindowRate = positiveWindows / windows.length;
+  const windowsWithTrades = windows.filter((windowItem) => windowItem.kpis.trades > 0).length;
+  const activityRate = windowsWithTrades / windows.length;
+  const medianNetR = median(netRs);
+  const netRStdDev = stdDev(netRs);
+  const consistencyScore =
+    positiveWindowRate * 40 +
+    activityRate * 20 +
+    medianNetR * 10 -
+    netRStdDev * 8;
+  return {
+    windows: windows.length,
+    positiveWindows,
+    positiveWindowRate: round2(positiveWindowRate * 100),
+    medianNetR: round2(medianNetR),
+    netRStdDev: round2(netRStdDev),
+    consistencyScore: round2(consistencyScore),
+  };
+}
+
 export function evaluateStrategyForSegment(
   strategyId: StrategyId,
   segment: SegmentId,
   candlesOneMinute: LabCandle[],
   snapshots: LabSnapshot[],
-  oiPoints: LabOIBuildupPoint[]
+  oiPoints: LabOIBuildupPoint[],
+  options?: {
+    profile?: ExecutionProfile;
+    fromIso?: string;
+    toIso?: string;
+  }
 ): StrategyEvaluation {
   const rule = STRATEGY_LAB_RULES_BY_ID[strategyId];
-  const trades = simulateStrategy(segment, strategyId, candlesOneMinute, snapshots, oiPoints);
+  const profile = options?.profile ?? "balanced";
+  const simulation = simulateStrategy(
+    segment,
+    strategyId,
+    candlesOneMinute,
+    snapshots,
+    oiPoints,
+    profile
+  );
+  const trades = simulation.trades;
   const kpis = computeKpis(trades);
-  const score = computeEvaluationScore(kpis, rule.qualityRating);
+  const baseScore = computeEvaluationScore(kpis, rule.qualityRating);
+  const fallbackFrom = candlesOneMinute[0]?.time ?? new Date().toISOString();
+  const fallbackTo = candlesOneMinute[candlesOneMinute.length - 1]?.time ?? new Date().toISOString();
+  const rollingWindows = computeRollingWindows(
+    trades,
+    options?.fromIso ?? fallbackFrom,
+    options?.toIso ?? fallbackTo,
+    rule.qualityRating
+  );
+  const consistency = computeConsistency(rollingWindows);
+  const finalScore = round2(baseScore * 0.45 + consistency.consistencyScore * 0.55);
+
   return {
     strategyId: rule.id,
     strategyName: rule.name,
     segment,
     qualityRating: rule.qualityRating,
+    profile,
     kpis,
-    score,
+    baseScore,
+    consistencyScore: consistency.consistencyScore,
+    score: finalScore,
+    activity: simulation.activity,
+    rollingWindows,
+    consistency,
     trades,
   };
 }
@@ -919,6 +1386,9 @@ export function evaluateStrategiesForSegment(params: {
   candlesOneMinute: LabCandle[];
   snapshots: LabSnapshot[];
   oiPoints: LabOIBuildupPoint[];
+  profile?: ExecutionProfile;
+  fromIso?: string;
+  toIso?: string;
 }): StrategyEvaluation[] {
   const selected =
     params.strategyIds && params.strategyIds.length > 0
@@ -932,7 +1402,12 @@ export function evaluateStrategiesForSegment(params: {
         params.segment,
         params.candlesOneMinute,
         params.snapshots,
-        params.oiPoints
+        params.oiPoints,
+        {
+          profile: params.profile ?? "balanced",
+          fromIso: params.fromIso,
+          toIso: params.toIso,
+        }
       )
     )
     .sort((a, b) => b.score - a.score);

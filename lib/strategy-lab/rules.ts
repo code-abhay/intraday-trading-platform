@@ -288,6 +288,213 @@ export const STRATEGY_LAB_RULES: StrategyRuleSpec[] = [
       },
     },
   },
+  {
+    id: "rsi_divergence_stochastic_reversal",
+    name: "RSI Divergence + Stochastic Reversal",
+    qualityRating: "A",
+    marketEnvironment: "Mean reversion at exhaustion zones",
+    indicators: ["RSI", "Stochastic Oscillator", "ATR", "EMA (9/21)"],
+    multiTimeframeAlignment:
+      "60m context identifies overextension while 5m divergence + stochastic trigger confirms reversal.",
+    longEntryRules: [
+      "Bullish RSI divergence appears near a local swing low.",
+      "Stochastic %K crosses above %D from oversold zone.",
+      "Price regains short-term structure with EMA9 support.",
+    ],
+    shortEntryRules: [
+      "Bearish RSI divergence appears near a local swing high.",
+      "Stochastic %K crosses below %D from overbought zone.",
+      "Price loses short-term structure below EMA9.",
+    ],
+    optionsSelection: [
+      "Prefer ATM or slight ITM for fast intraday reversal capture.",
+      "Use current weekly unless trigger appears late in session.",
+    ],
+    riskModel: [
+      "Stop beyond reversal pivot with ATR padding.",
+      "Per-trade risk 0.45% and daily cap 1.8%.",
+    ],
+    tradeManagement: [
+      "Take partial around first mean-reversion target.",
+      "Move stop to breakeven after +1R.",
+      "Trail remainder with EMA21.",
+    ],
+    invalidationRules: [
+      "Divergence fails on immediate retest.",
+      "Stochastic momentum rolls over before confirmation.",
+    ],
+    engine: {
+      executionIntervalMin: 5,
+      higherIntervalsMin: [60],
+      atrPeriod: 14,
+      stopAtrMult: 1.1,
+      targetR: 1.9,
+      maxBarsInTrade: 26,
+      minBarsBetweenTrades: 4,
+      riskPerTradePct: 0.45,
+      dailyRiskCapPct: 1.8,
+      params: {
+        divergenceLookback: 18,
+        stochOversold: 20,
+        stochOverbought: 80,
+      },
+    },
+  },
+  {
+    id: "sar_vwap_opening_drive",
+    name: "Parabolic SAR + VWAP Opening Drive",
+    qualityRating: "A",
+    marketEnvironment: "Opening drive momentum",
+    indicators: ["Parabolic SAR", "VWAP", "OBV", "Volume", "ATR"],
+    multiTimeframeAlignment:
+      "15m directional bias guides 1m opening-drive trigger around VWAP and SAR flips.",
+    longEntryRules: [
+      "Parabolic SAR flips bullish in opening window.",
+      "Price holds above VWAP and OBV confirms uptick.",
+      "Trigger candle has above-average volume.",
+    ],
+    shortEntryRules: [
+      "Parabolic SAR flips bearish in opening window.",
+      "Price holds below VWAP and OBV confirms downtick.",
+      "Trigger candle has above-average volume.",
+    ],
+    optionsSelection: [
+      "Prefer ITM for opening-drive momentum reliability.",
+      "Current weekly expiry for intraday resolution.",
+    ],
+    riskModel: [
+      "Stop at SAR level with ATR cushion.",
+      "Per-trade risk 0.5% and daily cap 2%.",
+    ],
+    tradeManagement: [
+      "Quick partial at first impulse extension.",
+      "Trail with SAR while momentum persists.",
+    ],
+    invalidationRules: [
+      "VWAP reclaim failure after trigger.",
+      "OBV diverges against opening impulse.",
+    ],
+    engine: {
+      executionIntervalMin: 1,
+      higherIntervalsMin: [15],
+      atrPeriod: 14,
+      stopAtrMult: 0.7,
+      targetR: 1.6,
+      maxBarsInTrade: 18,
+      minBarsBetweenTrades: 2,
+      riskPerTradePct: 0.5,
+      dailyRiskCapPct: 2,
+      params: {
+        sarStep: 0.02,
+        sarMax: 0.2,
+        openingCutoffMin: 120,
+        openingVolumeMult: 1.2,
+      },
+    },
+  },
+  {
+    id: "stochastic_macd_range_crossover",
+    name: "Stochastic-MACD Range Crossover",
+    qualityRating: "B+",
+    marketEnvironment: "Range compression and mean-reversion swings",
+    indicators: ["Stochastic", "MACD", "ADX", "Pivot proxy", "ATR"],
+    multiTimeframeAlignment:
+      "60m context confirms range regime while 3m oscillators trigger directional bounce entries.",
+    longEntryRules: [
+      "Range regime active (low ADX / non-trending state).",
+      "Stochastic %K crosses above %D from oversold zone.",
+      "MACD line turns up with improving histogram.",
+    ],
+    shortEntryRules: [
+      "Range regime active (low ADX / non-trending state).",
+      "Stochastic %K crosses below %D from overbought zone.",
+      "MACD line turns down with weakening histogram.",
+    ],
+    optionsSelection: [
+      "Prefer ATM or slight OTM for quick range bounces.",
+      "Use current weekly with tight trade-duration rules.",
+    ],
+    riskModel: [
+      "Stop outside recent range extreme with ATR buffer.",
+      "Per-trade risk 0.4% and daily cap 1.7%.",
+    ],
+    tradeManagement: [
+      "Book at range midpoint / opposite edge proxy.",
+      "Exit quickly when momentum stalls.",
+    ],
+    invalidationRules: [
+      "Range breaks into trend before entry.",
+      "MACD histogram reverses against crossover setup.",
+    ],
+    engine: {
+      executionIntervalMin: 3,
+      higherIntervalsMin: [60],
+      atrPeriod: 14,
+      stopAtrMult: 0.9,
+      targetR: 1.7,
+      maxBarsInTrade: 22,
+      minBarsBetweenTrades: 4,
+      riskPerTradePct: 0.4,
+      dailyRiskCapPct: 1.7,
+      params: {
+        adxRangeMax: 20,
+        stochOversold: 25,
+        stochOverbought: 75,
+      },
+    },
+  },
+  {
+    id: "fib_orderflow_continuation",
+    name: "Fib-OrderFlow Continuation",
+    qualityRating: "B+",
+    marketEnvironment: "Trend pullback continuation",
+    indicators: ["Supertrend", "Fibonacci", "MACD", "PCR", "ATR"],
+    multiTimeframeAlignment:
+      "15m trend filter with 5m pullback trigger around 0.5/0.618 retracement and momentum re-acceleration.",
+    longEntryRules: [
+      "Higher timeframe trend remains bullish.",
+      "Price pulls back into 0.5/0.618 fib zone.",
+      "MACD resumes bullish crossover with supportive PCR.",
+    ],
+    shortEntryRules: [
+      "Higher timeframe trend remains bearish.",
+      "Price pulls back into 0.5/0.618 fib zone.",
+      "MACD resumes bearish crossover with supportive PCR.",
+    ],
+    optionsSelection: [
+      "Prefer ATM for cleaner continuation delta.",
+      "Shift to next weekly near expiry if pullback is slow.",
+    ],
+    riskModel: [
+      "Stop beyond 0.786 fib with ATR overlay.",
+      "Per-trade risk 0.6% and daily cap 2%.",
+    ],
+    tradeManagement: [
+      "Partial at prior swing extension.",
+      "Trail with supertrend/EMA trend guard.",
+    ],
+    invalidationRules: [
+      "PCR flips against continuation bias.",
+      "Price closes beyond 0.786 invalidation zone.",
+    ],
+    engine: {
+      executionIntervalMin: 5,
+      higherIntervalsMin: [15],
+      atrPeriod: 14,
+      stopAtrMult: 1,
+      targetR: 2.1,
+      maxBarsInTrade: 30,
+      minBarsBetweenTrades: 5,
+      riskPerTradePct: 0.6,
+      dailyRiskCapPct: 2,
+      params: {
+        fibLookbackBars: 40,
+        fibZoneToleranceAtr: 0.3,
+        pcrTrendBullMin: 1.0,
+        pcrTrendBearMax: 1.0,
+      },
+    },
+  },
 ];
 
 export const STRATEGY_LAB_RULES_BY_ID: Record<StrategyId, StrategyRuleSpec> =

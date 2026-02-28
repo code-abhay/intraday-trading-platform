@@ -29,9 +29,11 @@ function SheetContent({
   className,
   children,
   side = "left",
+  title = "Sheet",
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   side?: "left" | "right";
+  title?: string;
 }) {
   return (
     <SheetPortal>
@@ -47,6 +49,7 @@ function SheetContent({
         )}
         {...props}
       >
+        <DialogPrimitive.Title className="sr-only">{title}</DialogPrimitive.Title>
         {children}
         <DialogPrimitive.Close className="absolute right-4 top-4 rounded-sm text-zinc-400 opacity-70 transition-opacity hover:opacity-100 focus:outline-none">
           <X className="size-4" />

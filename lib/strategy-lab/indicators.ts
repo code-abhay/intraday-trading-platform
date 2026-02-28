@@ -361,3 +361,112 @@ export function lowest(values: number[], index: number, length: number): number 
   }
   return l;
 }
+
+export interface StochasticSeries {
+  k: number[];
+  d: number[];
+}
+
+export function stochastic(
+  candles: LabCandle[],
+  period = 14,
+  smoothK = 3,
+  smoothD = 3
+): StochasticSeries {
+  if (candles.length === 0) return { k: [], d: [] };
+  const rawK = candles.map((candle, index) => {
+    const start = Math.max(0, index - period + 1);
+    let hh = Number.NEGATIVE_INFINITY;
+    let ll = Number.POSITIVE_INFINITY;
+    for (let i = start; i <= index; i++) {
+      hh = Math.max(hh, candles[i].high);
+      ll = Math.min(ll, candles[i].low);
+    }
+    const denom = hh - ll;
+    if (denom <= 0) return 50;
+    return ((candle.close - ll) / denom) * 100;
+  });
+  const k = sma(rawK, smoothK);
+  const d = sma(k, smoothD);
+  return { k, d };
+}
+
+export interface ParabolicSarSeries {
+  sar: number[];
+  trend: Array<1 | -1>;
+}
+
+export function parabolicSar(
+  candles: LabCandle[],
+  step = 0.02,
+  maxStep = 0.2
+): ParabolicSarSeries {
+  if (candles.length === 0) return { sar: [], trend: [] };
+  if (candles.length === 1) return { sar: [candles[0].low], trend: [1] };
+
+  const sar: number[] = Array(candles.length).fill(0);
+  const trend: Array<1 | -1> = Array(candles.length).fill(1);
+
+  let isUpTrend = candles[1].close >= candles[0].close;
+  let af = step;
+  let ep = isUpTrend ? Math.max(candles[0].high, candles[1].high) : Math.min(candles[0].low, candles[1].low);
+  sar[0] = isUpTrend ? candles[0].low : candles[0].high;
+  sar[1] = isUpTrend ? candles[0].low : candles[0].high;
+  trend[0] = isUpTrend ? 1 : -1;
+  trend[1] = trend[0];
+
+  for (let i = 2; i < candles.length; i++) {
+    const prevSar = sar[i - 1];
+    const current = candles[i];
+    const prev = candles[i - 1];
+    let nextSar = prevSar + af * (ep - prevSar);
+
+    if (isUpTrend) {
+      nextSar = Math.min(nextSar, prev.low, candles[i - 2].low);
+      if (current.low < nextSar) {
+        isUpTrend = false;
+        nextSar = ep;
+        ep = current.low;
+        af = step;
+      } else {
+        if (current.high > ep) {
+          ep = current.high;
+          af = Math.min(maxStep, af + step);
+        }
+      }
+    } else {
+      nextSar = Math.max(nextSar, prev.high, candles[i - 2].high);
+      if (current.high > nextSar) {
+        isUpTrend = true;
+        nextSar = ep;
+        ep = current.high;
+        af = step;
+      } else {
+        if (current.low < ep) {
+          ep = current.low;
+          af = Math.min(maxStep, af + step);
+        }
+      }
+    }
+
+    sar[i] = nextSar;
+    trend[i] = isUpTrend ? 1 : -1;
+  }
+
+  return { sar, trend };
+}
+
+export interface FibLevels {
+  level50: number;
+  level618: number;
+  level786: number;
+}
+
+export function fibLevelsFromRange(high: number, low: number): FibLevels {
+  const range = high - low;
+  return {
+    level50: high - range * 0.5,
+    level618: high - range * 0.618,
+    level786: high - range * 0.786,
+  };
+}
