@@ -187,40 +187,61 @@ export default function StrategyLabPage() {
     return () => window.clearInterval(interval);
   }, [activeRunId, activeRunStatus, fetchRunStatus]);
 
-  const topOverall = data?.overallRanking?.[0] ?? null;
+  const displayData = useMemo(() => {
+    if (!data) return null;
+    if (segment === "ALL") return data;
+    const segmentTag = `${segment}:`;
+    return {
+      ...data,
+      segments: data.segments.filter((item) => item.segment === segment),
+      overallRanking: data.overallRanking.filter((item) => item.segment === segment),
+      duplicateDiagnostics: {
+        threshold: data.duplicateDiagnostics?.threshold ?? 72,
+        pairs: (data.duplicateDiagnostics?.pairs ?? []).filter((item) => item.segment === segment),
+        summaries: (data.duplicateDiagnostics?.summaries ?? []).filter(
+          (item) => item.segment === segment
+        ),
+      },
+      warnings: (data.warnings ?? []).filter(
+        (warning) => !warning.includes(":") || warning.startsWith(segmentTag)
+      ),
+    };
+  }, [data, segment]);
+
+  const topOverall = displayData?.overallRanking?.[0] ?? null;
   const totalTrades = useMemo(
     () =>
-      (data?.overallRanking ?? []).reduce(
+      (displayData?.overallRanking ?? []).reduce(
         (sum, evalItem) => sum + (evalItem.kpis?.trades ?? 0),
         0
       ),
-    [data]
+    [displayData]
   );
   const averageWinRate = useMemo(() => {
-    const ranking = data?.overallRanking ?? [];
+    const ranking = displayData?.overallRanking ?? [];
     if (!ranking.length) return 0;
     return (
       ranking.reduce((sum, evalItem) => sum + (evalItem.kpis?.winRate ?? 0), 0) /
       ranking.length
     );
-  }, [data]);
+  }, [displayData]);
   const lowTradeDiagnostics = useMemo(() => {
-    const list = data?.overallRanking ?? [];
-    const activeDays = data?.days ?? days;
+    const list = displayData?.overallRanking ?? [];
+    const activeDays = displayData?.days ?? days;
     return list
       .filter((item) => item.kpis.trades <= Math.max(4, Math.round(activeDays * 0.75)))
       .slice(0, 12);
-  }, [data, days]);
+  }, [displayData, days]);
   const duplicatePairs = useMemo(
-    () => (data?.duplicateDiagnostics?.pairs ?? []).slice(0, 12),
-    [data]
+    () => (displayData?.duplicateDiagnostics?.pairs ?? []).slice(0, 12),
+    [displayData]
   );
   const duplicateSummaries = useMemo(
-    () => (data?.duplicateDiagnostics?.summaries ?? []).slice(0, 12),
-    [data]
+    () => (displayData?.duplicateDiagnostics?.summaries ?? []).slice(0, 12),
+    [displayData]
   );
-  const duplicateThreshold = data?.duplicateDiagnostics?.threshold ?? 72;
-  const lastUpdated = data ? new Date(data.generatedAt).toLocaleTimeString() : null;
+  const duplicateThreshold = displayData?.duplicateDiagnostics?.threshold ?? 72;
+  const lastUpdated = displayData ? new Date(displayData.generatedAt).toLocaleTimeString() : null;
 
   return (
     <>
@@ -231,10 +252,10 @@ export default function StrategyLabPage() {
         </div>
         <div className="flex-1" />
         <div className="flex items-center gap-3">
-          {data && (
+          {displayData && (
             <>
               <Badge variant="default" className="hidden sm:inline-flex">
-                {data.mode === "async" ? "Cached Async Run" : "Direct Evaluation"}
+                {displayData.mode === "async" ? "Cached Async Run" : "Direct Evaluation"}
               </Badge>
               <span className="hidden sm:inline-flex items-center text-xs text-zinc-500">
                 <Clock className="size-3 mr-1" />
@@ -348,11 +369,11 @@ export default function StrategyLabPage() {
                 {loading ? "Running..." : "Run Test"}
               </Button>
             </div>
-            {data && (
+            {displayData && (
               <p className="text-xs text-zinc-500">
-                Window: {formatDateRange(data.from, data.to)} ({data.days} days)
-                {` • Profile: ${data.profile}`}
-                {typeof data.pageSize === "number" ? ` • Page size: ${data.pageSize}` : ""}
+                Window: {formatDateRange(displayData.from, displayData.to)} ({displayData.days} days)
+                {` • Profile: ${displayData.profile}`}
+                {typeof displayData.pageSize === "number" ? ` • Page size: ${displayData.pageSize}` : ""}
               </p>
             )}
             <p className="text-xs text-zinc-500">Current filter: {currentFilterLabel}</p>
@@ -374,10 +395,10 @@ export default function StrategyLabPage() {
           </Card>
         )}
 
-        {data?.warnings?.length ? (
+        {displayData?.warnings?.length ? (
           <Card className="border-amber-500/20 bg-amber-500/5">
             <CardContent className="p-4 space-y-1">
-              {data.warnings.slice(0, 8).map((warning) => (
+              {displayData.warnings.slice(0, 8).map((warning) => (
                 <p key={warning} className="text-xs text-amber-200">
                   {warning}
                 </p>
@@ -386,7 +407,7 @@ export default function StrategyLabPage() {
           </Card>
         ) : null}
 
-        {data && (
+        {displayData && (
           <div className="grid gap-3 grid-cols-2 lg:grid-cols-4">
             <StatCard
               label="Top Strategy"
@@ -402,7 +423,7 @@ export default function StrategyLabPage() {
             <StatCard
               label="Total Simulated Trades"
               value={formatNumber(totalTrades, 0)}
-              subValue={`${data.overallRanking.length} strategy-segment tests`}
+              subValue={`${displayData.overallRanking.length} strategy-segment tests`}
               icon={Activity}
             />
             <StatCard
@@ -450,14 +471,14 @@ export default function StrategyLabPage() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {!data?.overallRanking?.length ? (
+                  {!displayData?.overallRanking?.length ? (
                     <TableRow>
                       <TableCell colSpan={17} className="text-center text-zinc-500 py-8">
                         {loading ? "Running strategy tests..." : "No ranking data available."}
                       </TableCell>
                     </TableRow>
                   ) : (
-                    data.overallRanking.map((item, idx) => (
+                    displayData.overallRanking.map((item, idx) => (
                       <TableRow key={`${item.segment}_${item.strategyId}_${idx}`}>
                         <TableCell className="font-medium">{idx + 1}</TableCell>
                         <TableCell>
@@ -488,7 +509,7 @@ export default function StrategyLabPage() {
                         <TableCell className="text-right">{formatNumber(item.kpis.profitFactor, 2)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.kpis.maxDrawdownR, 2)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.kpis.trades, 0)}</TableCell>
-                        <TableCell className="text-right">{formatNumber(item.kpis.trades / Math.max(1, data.days), 2)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.kpis.trades / Math.max(1, displayData.days), 2)}</TableCell>
                         <TableCell className="text-right">
                           {formatNumber(item.consistency.positiveWindowRate, 1)}%
                         </TableCell>
@@ -506,10 +527,10 @@ export default function StrategyLabPage() {
             <CardTitle className="text-base">Best Strategy By Segment</CardTitle>
           </CardHeader>
           <CardContent className="grid gap-3 md:grid-cols-2">
-            {!data?.segments?.length ? (
+            {!displayData?.segments?.length ? (
               <p className="text-sm text-zinc-500">No segment-level breakdown yet.</p>
             ) : (
-              data.segments.map((segmentSummary) => {
+              displayData.segments.map((segmentSummary) => {
                 const best = segmentSummary.bestStrategy;
                 return (
                   <div
