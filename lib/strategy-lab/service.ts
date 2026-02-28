@@ -1,6 +1,6 @@
 import { SEGMENTS, type SegmentId } from "@/lib/segments";
 import { getSupabaseAdmin } from "@/lib/supabase";
-import { evaluateStrategiesForSegment } from "@/lib/strategy-lab/evaluators";
+import { evaluateStrategiesForSegmentDetailed } from "@/lib/strategy-lab/evaluators";
 import { STRATEGY_LAB_RULES } from "@/lib/strategy-lab/rules";
 import type {
   ExecutionProfile,
@@ -237,6 +237,9 @@ export async function evaluateStrategyLab(
     new Date(new Date(toIso).getTime() - input.days * 24 * 60 * 60 * 1000).toISOString();
   const warnings: string[] = [];
   const segmentSummaries: StrategyLabApiResponse["segments"] = [];
+  let duplicateThreshold = 72;
+  const duplicatePairs: StrategyLabApiResponse["duplicateDiagnostics"]["pairs"] = [];
+  const duplicateSummaries: StrategyLabApiResponse["duplicateDiagnostics"]["summaries"] = [];
 
   for (const segment of input.segments) {
     try {
@@ -258,7 +261,7 @@ export async function evaluateStrategyLab(
         );
       }
 
-      const evaluations = evaluateStrategiesForSegment({
+      const detailed = evaluateStrategiesForSegmentDetailed({
         segment,
         strategyIds: input.strategyIds,
         candlesOneMinute: candles,
@@ -268,6 +271,18 @@ export async function evaluateStrategyLab(
         fromIso,
         toIso,
       });
+      const evaluations = detailed.evaluations;
+      duplicateThreshold = detailed.duplicateThreshold;
+      duplicatePairs.push(...detailed.duplicatePairs);
+      duplicateSummaries.push(...detailed.duplicateSummaries);
+      const highOverlapPairs = detailed.duplicatePairs.filter(
+        (pair) => pair.similarity >= detailed.duplicateThreshold
+      );
+      if (highOverlapPairs.length > 0) {
+        warnings.push(
+          `${segment}: ${highOverlapPairs.length} near-duplicate strategy pairs detected (similarity >= ${detailed.duplicateThreshold}).`
+        );
+      }
       validateEvaluations(segment, evaluations, warnings);
 
       segmentSummaries.push({
@@ -315,6 +330,11 @@ export async function evaluateStrategyLab(
     pageSize: STRATEGY_LAB_PAGE_SIZE,
     segments: segmentSummaries,
     overallRanking,
+    duplicateDiagnostics: {
+      threshold: duplicateThreshold,
+      pairs: duplicatePairs.sort((a, b) => b.similarity - a.similarity),
+      summaries: duplicateSummaries.sort((a, b) => b.maxSimilarity - a.maxSimilarity),
+    },
     warnings,
   };
 }

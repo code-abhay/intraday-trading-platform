@@ -76,6 +76,11 @@ export async function GET(request: NextRequest) {
       status: run.status,
       segments: [],
       overallRanking: [],
+      duplicateDiagnostics: {
+        threshold: 72,
+        pairs: [],
+        summaries: [],
+      },
       warnings: [
         `Large window (${days} days) queued for async execution.`,
         "Poll /api/strategy-lab/run/[id] for run completion.",

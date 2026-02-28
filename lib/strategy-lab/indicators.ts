@@ -470,3 +470,229 @@ export function fibLevelsFromRange(high: number, low: number): FibLevels {
     level786: high - range * 0.786,
   };
 }
+
+export function mfi(candles: LabCandle[], period = 14): number[] {
+  if (candles.length === 0) return [];
+  const typical = candles.map((c) => (c.high + c.low + c.close) / 3);
+  const moneyFlow = candles.map((c, i) => typical[i] * safe(c.volume, 0));
+  const positive: number[] = Array(candles.length).fill(0);
+  const negative: number[] = Array(candles.length).fill(0);
+
+  for (let i = 1; i < candles.length; i++) {
+    if (typical[i] > typical[i - 1]) {
+      positive[i] = moneyFlow[i];
+    } else if (typical[i] < typical[i - 1]) {
+      negative[i] = moneyFlow[i];
+    }
+  }
+
+  const out: number[] = Array(candles.length).fill(50);
+  let posRoll = 0;
+  let negRoll = 0;
+  for (let i = 0; i < candles.length; i++) {
+    posRoll += positive[i];
+    negRoll += negative[i];
+    if (i >= period) {
+      posRoll -= positive[i - period];
+      negRoll -= negative[i - period];
+    }
+    if (i + 1 < period) {
+      out[i] = i > 0 ? out[i - 1] : 50;
+      continue;
+    }
+    if (negRoll <= 0 && posRoll <= 0) {
+      out[i] = 50;
+      continue;
+    }
+    if (negRoll <= 0) {
+      out[i] = 100;
+      continue;
+    }
+    const ratio = posRoll / Math.max(0.00001, negRoll);
+    out[i] = 100 - 100 / (1 + ratio);
+  }
+  return out;
+}
+
+export interface AroonSeries {
+  up: number[];
+  down: number[];
+}
+
+export function aroon(candles: LabCandle[], period = 14): AroonSeries {
+  if (candles.length === 0) return { up: [], down: [] };
+  const up: number[] = [];
+  const down: number[] = [];
+  for (let i = 0; i < candles.length; i++) {
+    const start = Math.max(0, i - period + 1);
+    let highestIndex = start;
+    let lowestIndex = start;
+    for (let j = start; j <= i; j++) {
+      if (candles[j].high >= candles[highestIndex].high) highestIndex = j;
+      if (candles[j].low <= candles[lowestIndex].low) lowestIndex = j;
+    }
+    const span = Math.max(1, i - start + 1);
+    const barsSinceHigh = i - highestIndex;
+    const barsSinceLow = i - lowestIndex;
+    up.push(((span - barsSinceHigh) / span) * 100);
+    down.push(((span - barsSinceLow) / span) * 100);
+  }
+  return { up, down };
+}
+
+export interface IchimokuSeries {
+  tenkan: number[];
+  kijun: number[];
+  spanA: number[];
+  spanB: number[];
+}
+
+export function ichimoku(
+  candles: LabCandle[],
+  conversionPeriod = 9,
+  basePeriod = 26,
+  spanBPeriod = 52
+): IchimokuSeries {
+  if (candles.length === 0) return { tenkan: [], kijun: [], spanA: [], spanB: [] };
+
+  function midpoint(index: number, length: number): number {
+    const start = Math.max(0, index - length + 1);
+    let hh = Number.NEGATIVE_INFINITY;
+    let ll = Number.POSITIVE_INFINITY;
+    for (let i = start; i <= index; i++) {
+      hh = Math.max(hh, candles[i].high);
+      ll = Math.min(ll, candles[i].low);
+    }
+    return (hh + ll) / 2;
+  }
+
+  const tenkan = candles.map((_, i) => midpoint(i, conversionPeriod));
+  const kijun = candles.map((_, i) => midpoint(i, basePeriod));
+  const spanA = candles.map((_, i) => (tenkan[i] + kijun[i]) / 2);
+  const spanB = candles.map((_, i) => midpoint(i, spanBPeriod));
+  return { tenkan, kijun, spanA, spanB };
+}
+
+function toIstTimeParts(value: string): { sessionKey: string; minuteOfDay: number } | null {
+  const date = new Date(value);
+  const ms = date.getTime();
+  if (Number.isNaN(ms)) return null;
+  const ist = new Date(ms + 330 * 60 * 1000);
+  const y = ist.getUTCFullYear();
+  const m = String(ist.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(ist.getUTCDate()).padStart(2, "0");
+  return {
+    sessionKey: `${y}-${m}-${d}`,
+    minuteOfDay: ist.getUTCHours() * 60 + ist.getUTCMinutes(),
+  };
+}
+
+export interface InitialBalanceRangeSeries {
+  high: number[];
+  low: number[];
+}
+
+export function initialBalanceRange(
+  candles: LabCandle[],
+  openingRangeMinutes = 45
+): InitialBalanceRangeSeries {
+  if (candles.length === 0) return { high: [], low: [] };
+  const outHigh: number[] = [];
+  const outLow: number[] = [];
+
+  let currentSession = "";
+  let ibHigh = Number.NEGATIVE_INFINITY;
+  let ibLow = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < candles.length; i++) {
+    const parts = toIstTimeParts(candles[i].time);
+    if (!parts) {
+      outHigh.push(i > 0 ? outHigh[i - 1] : candles[i].high);
+      outLow.push(i > 0 ? outLow[i - 1] : candles[i].low);
+      continue;
+    }
+    if (parts.sessionKey !== currentSession) {
+      currentSession = parts.sessionKey;
+      ibHigh = Number.NEGATIVE_INFINITY;
+      ibLow = Number.POSITIVE_INFINITY;
+    }
+
+    const minuteFromOpen = parts.minuteOfDay - (9 * 60 + 15);
+    if (minuteFromOpen >= 0 && minuteFromOpen <= openingRangeMinutes) {
+      ibHigh = Math.max(ibHigh, candles[i].high);
+      ibLow = Math.min(ibLow, candles[i].low);
+    }
+    if (!Number.isFinite(ibHigh) || !Number.isFinite(ibLow)) {
+      ibHigh = candles[i].high;
+      ibLow = candles[i].low;
+    }
+
+    outHigh.push(ibHigh);
+    outLow.push(ibLow);
+  }
+
+  return { high: outHigh, low: outLow };
+}
+
+export interface VolumeStructureSeries {
+  hvn: number[];
+  lvn: number[];
+  vacuum: number[];
+}
+
+export function volumeStructureNodes(
+  candles: LabCandle[],
+  lookback = 48,
+  bins = 12
+): VolumeStructureSeries {
+  if (candles.length === 0) return { hvn: [], lvn: [], vacuum: [] };
+
+  const hvn: number[] = [];
+  const lvn: number[] = [];
+  const vacuum: number[] = [];
+  const safeBins = Math.max(6, Math.round(bins));
+  const safeLookback = Math.max(16, Math.round(lookback));
+
+  for (let i = 0; i < candles.length; i++) {
+    const start = Math.max(0, i - safeLookback + 1);
+    let rangeHigh = Number.NEGATIVE_INFINITY;
+    let rangeLow = Number.POSITIVE_INFINITY;
+    for (let j = start; j <= i; j++) {
+      rangeHigh = Math.max(rangeHigh, candles[j].high);
+      rangeLow = Math.min(rangeLow, candles[j].low);
+    }
+    const range = Math.max(0.00001, rangeHigh - rangeLow);
+    const step = range / safeBins;
+    const volumeBins = Array(safeBins).fill(0);
+
+    for (let j = start; j <= i; j++) {
+      const tp = (candles[j].high + candles[j].low + candles[j].close) / 3;
+      const idx = Math.max(
+        0,
+        Math.min(safeBins - 1, Math.floor((tp - rangeLow) / Math.max(0.00001, step)))
+      );
+      volumeBins[idx] += safe(candles[j].volume, 0);
+    }
+
+    let hvnIdx = 0;
+    let lvnIdx = 0;
+    for (let j = 1; j < volumeBins.length; j++) {
+      if (volumeBins[j] > volumeBins[hvnIdx]) hvnIdx = j;
+      if (volumeBins[j] < volumeBins[lvnIdx]) lvnIdx = j;
+    }
+
+    const close = candles[i].close;
+    const currentIdx = Math.max(
+      0,
+      Math.min(safeBins - 1, Math.floor((close - rangeLow) / Math.max(0.00001, step)))
+    );
+    const maxVol = Math.max(1, volumeBins[hvnIdx]);
+    const currentVol = volumeBins[currentIdx];
+
+    hvn.push(rangeLow + (hvnIdx + 0.5) * step);
+    lvn.push(rangeLow + (lvnIdx + 0.5) * step);
+    vacuum.push(Math.max(0, Math.min(1, 1 - currentVol / maxVol)));
+  }
+
+  return { hvn, lvn, vacuum };
+}

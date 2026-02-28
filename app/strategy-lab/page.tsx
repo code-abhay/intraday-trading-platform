@@ -183,6 +183,15 @@ export default function StrategyLabPage() {
       .filter((item) => item.kpis.trades <= Math.max(4, Math.round(activeDays * 0.75)))
       .slice(0, 12);
   }, [data, days]);
+  const duplicatePairs = useMemo(
+    () => (data?.duplicateDiagnostics?.pairs ?? []).slice(0, 12),
+    [data]
+  );
+  const duplicateSummaries = useMemo(
+    () => (data?.duplicateDiagnostics?.summaries ?? []).slice(0, 12),
+    [data]
+  );
+  const duplicateThreshold = data?.duplicateDiagnostics?.threshold ?? 72;
   const lastUpdated = data ? new Date(data.generatedAt).toLocaleTimeString() : null;
 
   return (
@@ -371,8 +380,8 @@ export default function StrategyLabPage() {
             />
             <StatCard
               label="Risk-Adjusted Focus"
-              value="Consistency-Aware Score"
-              subValue="Base performance + rolling weekly stability"
+              value="Reliability + Uniqueness"
+              subValue="Base + consistency + frequency reliability - duplicate penalty"
               icon={FlaskConical}
             />
           </div>
@@ -394,6 +403,9 @@ export default function StrategyLabPage() {
                     <TableHead className="text-right">Final</TableHead>
                     <TableHead className="text-right">Base</TableHead>
                     <TableHead className="text-right">Consistency</TableHead>
+                    <TableHead className="text-right">Reliability</TableHead>
+                    <TableHead className="text-right">Dup Risk</TableHead>
+                    <TableHead className="text-right">Dup Penalty</TableHead>
                     <TableHead className="text-right">Net R</TableHead>
                     <TableHead className="text-right">Win Rate</TableHead>
                     <TableHead className="text-right">Profit Factor</TableHead>
@@ -406,7 +418,7 @@ export default function StrategyLabPage() {
                 <TableBody>
                   {!data?.overallRanking?.length ? (
                     <TableRow>
-                      <TableCell colSpan={14} className="text-center text-zinc-500 py-8">
+                      <TableCell colSpan={17} className="text-center text-zinc-500 py-8">
                         {loading ? "Running strategy tests..." : "No ranking data available."}
                       </TableCell>
                     </TableRow>
@@ -426,6 +438,11 @@ export default function StrategyLabPage() {
                         <TableCell className="text-right font-semibold">{formatNumber(item.score, 2)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.baseScore, 2)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.consistencyScore, 2)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.reliabilityScore, 2)}</TableCell>
+                        <TableCell className="text-right">{formatNumber(item.duplicateRisk, 1)}%</TableCell>
+                        <TableCell className="text-right text-amber-300">
+                          -{formatNumber(item.duplicatePenalty, 2)}
+                        </TableCell>
                         <TableCell
                           className={`text-right ${
                             item.kpis.netR >= 0 ? "text-emerald-400" : "text-red-400"
@@ -482,6 +499,10 @@ export default function StrategyLabPage() {
                           <span>Base: {formatNumber(best.baseScore, 2)}</span>
                           <span>•</span>
                           <span>Consistency: {formatNumber(best.consistencyScore, 2)}</span>
+                          <span>•</span>
+                          <span>Reliability: {formatNumber(best.reliabilityScore, 2)}</span>
+                          <span>•</span>
+                          <span>Dup Penalty: -{formatNumber(best.duplicatePenalty, 2)}</span>
                           <span>•</span>
                           <span>Win: {formatPct(best.kpis.winRate)}</span>
                           <span>•</span>
@@ -555,6 +576,95 @@ export default function StrategyLabPage() {
                         <TableCell className="text-right">{formatNumber(item.activity.blockedByDailyRisk, 0)}</TableCell>
                         <TableCell className="text-right">{formatNumber(item.activity.blockedByRiskFilter, 0)}</TableCell>
                         <TableCell>{topRejectionReason(item.activity.rejectionReasons)}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base">
+              Duplicate Strategy Diagnostics (threshold {formatNumber(duplicateThreshold, 0)})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="rounded-lg border border-zinc-800 overflow-auto">
+              <Table className="min-w-[980px]">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>Segment</TableHead>
+                    <TableHead>Strategy Pair</TableHead>
+                    <TableHead className="text-right">Similarity</TableHead>
+                    <TableHead className="text-right">Entry Overlap</TableHead>
+                    <TableHead className="text-right">Direction Agree</TableHead>
+                    <TableHead className="text-right">Trade Count Match</TableHead>
+                    <TableHead className="text-right">Daily NetR Corr</TableHead>
+                    <TableHead>Reason Tags</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {!duplicatePairs.length ? (
+                    <TableRow>
+                      <TableCell colSpan={8} className="text-center text-zinc-500 py-6">
+                        No high-overlap strategy pairs in the current run.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    duplicatePairs.map((pair) => (
+                      <TableRow key={`${pair.segment}_${pair.strategyAId}_${pair.strategyBId}`}>
+                        <TableCell>{pair.segment}</TableCell>
+                        <TableCell>
+                          {pair.strategyAName} <span className="text-zinc-500">vs</span> {pair.strategyBName}
+                        </TableCell>
+                        <TableCell className="text-right">{formatNumber(pair.similarity, 1)}%</TableCell>
+                        <TableCell className="text-right">{formatNumber(pair.entryOverlapPct, 1)}%</TableCell>
+                        <TableCell className="text-right">{formatNumber(pair.directionAgreementPct, 1)}%</TableCell>
+                        <TableCell className="text-right">
+                          {formatNumber(pair.tradeCountSimilarityPct, 1)}%
+                        </TableCell>
+                        <TableCell className="text-right">{formatNumber(pair.netRCorrelationPct, 1)}%</TableCell>
+                        <TableCell className="text-xs text-zinc-400">{pair.reasons.join(", ")}</TableCell>
+                      </TableRow>
+                    ))
+                  )}
+                </TableBody>
+              </Table>
+            </div>
+
+            <div className="rounded-lg border border-zinc-800 overflow-auto">
+              <Table className="min-w-[760px]">
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead>Segment</TableHead>
+                    <TableHead>Strategy</TableHead>
+                    <TableHead className="text-right">Max Similarity</TableHead>
+                    <TableHead className="text-right">Avg Similarity</TableHead>
+                    <TableHead className="text-right">Near Duplicates</TableHead>
+                    <TableHead className="text-right">Penalty</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {!duplicateSummaries.length ? (
+                    <TableRow>
+                      <TableCell colSpan={6} className="text-center text-zinc-500 py-6">
+                        No strategy-level duplicate summary available.
+                      </TableCell>
+                    </TableRow>
+                  ) : (
+                    duplicateSummaries.map((row) => (
+                      <TableRow key={`${row.segment}_${row.strategyId}_dup`}>
+                        <TableCell>{row.segment}</TableCell>
+                        <TableCell>{row.strategyName}</TableCell>
+                        <TableCell className="text-right">{formatNumber(row.maxSimilarity, 1)}%</TableCell>
+                        <TableCell className="text-right">{formatNumber(row.averageSimilarity, 1)}%</TableCell>
+                        <TableCell className="text-right">{formatNumber(row.nearDuplicateCount, 0)}</TableCell>
+                        <TableCell className="text-right text-amber-300">
+                          -{formatNumber(row.duplicatePenalty, 2)}
+                        </TableCell>
                       </TableRow>
                     ))
                   )}

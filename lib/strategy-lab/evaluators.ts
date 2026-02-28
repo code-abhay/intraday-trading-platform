@@ -1,6 +1,7 @@
 import type { SegmentId } from "@/lib/segments";
 import {
   adx,
+  aroon,
   atr,
   bearishDivergence,
   bollingerBands,
@@ -10,8 +11,11 @@ import {
   ema,
   fibLevelsFromRange,
   highest,
+  ichimoku,
+  initialBalanceRange,
   lowest,
   macd,
+  mfi,
   obv,
   parabolicSar,
   resampleCandles,
@@ -20,6 +24,7 @@ import {
   sma,
   stochastic,
   supertrend,
+  volumeStructureNodes,
 } from "@/lib/strategy-lab/indicators";
 import { STRATEGY_LAB_RULES, STRATEGY_LAB_RULES_BY_ID } from "@/lib/strategy-lab/rules";
 import type {
@@ -30,6 +35,8 @@ import type {
   RollingWindowEvaluation,
   SimulatedTrade,
   StrategyActivityDiagnostics,
+  StrategyDuplicatePair,
+  StrategyDuplicateSummary,
   StrategyConsistencyMetrics,
   StrategyEvaluation,
   StrategyId,
@@ -76,14 +83,26 @@ interface PreparedSeries {
   ema9: number[];
   ema21: number[];
   rsi14: number[];
+  mfi14: number[];
   atr14: number[];
   adx14: number[];
+  aroonUp: number[];
+  aroonDown: number[];
   macdLine: number[];
   macdSignal: number[];
   macdHist: number[];
+  ichimokuTenkan: number[];
+  ichimokuKijun: number[];
+  ichimokuSpanA: number[];
+  ichimokuSpanB: number[];
   bollingerUpper: number[];
   bollingerLower: number[];
   bollingerWidthPct: number[];
+  ibHigh: number[];
+  ibLow: number[];
+  hvn: number[];
+  lvn: number[];
+  volumeVacuum: number[];
   obv: number[];
   supertrendLine: number[];
   supertrendTrend: Array<1 | -1>;
@@ -120,6 +139,8 @@ interface SimulateResult {
   trades: SimulatedTrade[];
   activity: StrategyActivityDiagnostics;
 }
+
+export const DUPLICATE_SIMILARITY_THRESHOLD = 72;
 
 function toMs(time: string): number {
   const t = new Date(time).getTime();
@@ -282,10 +303,22 @@ function prepareSeries(
   const ema9 = ema(close, 9);
   const ema21 = ema(close, 21);
   const rsi14 = rsi(close, 14);
+  const mfi14 = mfi(candles, 14);
   const atr14 = atr(candles, rule.engine.atrPeriod);
   const adx14 = adx(candles, 14);
+  const aroonSeries = aroon(candles, 14);
   const macdSeries = macd(close, 12, 26, 9);
+  const ichimokuSeries = ichimoku(candles, 9, 26, 52);
   const bands = bollingerBands(close, 20, 2);
+  const ibSeries = initialBalanceRange(
+    candles,
+    Math.max(15, Math.round(rule.engine.params.ibMinutes ?? 45))
+  );
+  const volumeStructure = volumeStructureNodes(
+    candles,
+    Math.max(20, Math.round(rule.engine.params.volumeNodeLookback ?? 48)),
+    Math.max(8, Math.round(rule.engine.params.volumeNodeBins ?? 12))
+  );
   const obvSeries = obv(candles);
   const st = supertrend(
     candles,
@@ -317,14 +350,26 @@ function prepareSeries(
     ema9,
     ema21,
     rsi14,
+    mfi14,
     atr14,
     adx14,
+    aroonUp: aroonSeries.up,
+    aroonDown: aroonSeries.down,
     macdLine: macdSeries.line,
     macdSignal: macdSeries.signal,
     macdHist: macdSeries.histogram,
+    ichimokuTenkan: ichimokuSeries.tenkan,
+    ichimokuKijun: ichimokuSeries.kijun,
+    ichimokuSpanA: ichimokuSeries.spanA,
+    ichimokuSpanB: ichimokuSeries.spanB,
     bollingerUpper: bands.upper,
     bollingerLower: bands.lower,
     bollingerWidthPct: bands.bandwidthPct,
+    ibHigh: ibSeries.high,
+    ibLow: ibSeries.low,
+    hvn: volumeStructure.hvn,
+    lvn: volumeStructure.lvn,
+    volumeVacuum: volumeStructure.vacuum,
     obv: obvSeries,
     supertrendLine: st.line,
     supertrendTrend: st.trend,
@@ -910,6 +955,251 @@ function detectSignal(
 
       return { candidate: null, rejectionReason: "fib_continuation_missing" };
     }
+    case "kumo_volumetric_breakout": {
+      const mfiLongMin = adjusted(profile, rule.engine.params.mfiLongMin ?? 60, 55);
+      const mfiShortMax = adjusted(profile, rule.engine.params.mfiShortMax ?? 40, 45);
+      const obvBreakLookback = Math.max(8, Math.round(rule.engine.params.obvBreakLookback ?? 12));
+      const vacuumMin = adjusted(profile, rule.engine.params.vacuumMin ?? 0.35, 0.25);
+      const breakoutVolumeMult = adjusted(profile, rule.engine.params.breakoutVolumeMult ?? 1.2, 1.05);
+      const cloudTop = Math.max(series.ichimokuSpanA[i] ?? close, series.ichimokuSpanB[i] ?? close);
+      const cloudBottom = Math.min(series.ichimokuSpanA[i] ?? close, series.ichimokuSpanB[i] ?? close);
+      const breakoutUp = close > cloudTop && (series.close[i - 1] ?? close) <= cloudTop;
+      const breakoutDown = close < cloudBottom && (series.close[i - 1] ?? close) >= cloudBottom;
+      const obvBreakUp = series.obv[i] > highest(series.obv, i - 1, obvBreakLookback);
+      const obvBreakDown = series.obv[i] < lowest(series.obv, i - 1, obvBreakLookback);
+      const vacuumActive = (series.volumeVacuum[i] ?? 0) >= vacuumMin;
+      const volumeConfirmed = (series.volume[i] ?? 0) >= (series.volumeSma20[i] ?? 0) * breakoutVolumeMult;
+
+      const longChecks = [
+        higherBullish,
+        breakoutUp,
+        obvBreakUp,
+        (series.mfi14[i] ?? 50) >= mfiLongMin,
+        close >= (series.hvn[i] ?? close),
+        vacuumActive,
+        volumeConfirmed,
+      ];
+      if (passesChecks(profile, longChecks, [1, 3], longChecks.length, 5)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(61, longChecks),
+          reason: "Kumo breakout with volume-structure release",
+          stopLoss: Math.min(cloudBottom - atrNow * 0.25, low - atrNow * rule.engine.stopAtrMult),
+          trailingMode: "EMA21",
+        };
+      }
+
+      const shortChecks = [
+        higherBearish,
+        breakoutDown,
+        obvBreakDown,
+        (series.mfi14[i] ?? 50) <= mfiShortMax,
+        close <= (series.hvn[i] ?? close),
+        vacuumActive,
+        volumeConfirmed,
+      ];
+      if (passesChecks(profile, shortChecks, [1, 3], shortChecks.length, 5)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(61, shortChecks),
+          reason: "Kumo breakdown with volume-structure release",
+          stopLoss: Math.max(cloudTop + atrNow * 0.25, high + atrNow * rule.engine.stopAtrMult),
+          trailingMode: "EMA21",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "kumo_breakout_confluence_missing" };
+    }
+    case "ib_volatility_expansion": {
+      const ibMinutes = Math.max(15, Math.round(rule.engine.params.ibMinutes ?? 45));
+      const openingCutoffMin = Math.max(
+        ibMinutes + 15,
+        Math.round(rule.engine.params.openingCutoffMin ?? 210)
+      );
+      const minutesFromOpen = istMinutesFromStart(series.candles[i].time);
+      if (minutesFromOpen < ibMinutes || minutesFromOpen > openingCutoffMin) {
+        return { candidate: null, rejectionReason: "outside_ib_window" };
+      }
+      const aroonSpikeMin = adjusted(profile, rule.engine.params.aroonSpikeMin ?? 80, 70);
+      const aroonConflictMax = adjusted(profile, rule.engine.params.aroonConflictMax ?? 50, 60);
+      const atrExpansionMin = adjusted(profile, rule.engine.params.atrExpansionMin ?? 1.08, 1.02);
+      const volumeMult = adjusted(profile, rule.engine.params.ibBreakVolumeMult ?? 1.15, 1.05);
+      const ibHigh = series.ibHigh[i] ?? close;
+      const ibLow = series.ibLow[i] ?? close;
+      const breakoutUp = close > ibHigh && (series.close[i - 1] ?? close) <= ibHigh;
+      const breakoutDown = close < ibLow && (series.close[i - 1] ?? close) >= ibLow;
+      const atrExpanding = atrNow >= (series.atr14[i - 1] ?? atrNow) * atrExpansionMin;
+      const volumeConfirmed = (series.volume[i] ?? 0) >= (series.volumeSma20[i] ?? 0) * volumeMult;
+
+      const longChecks = [
+        higherBullish,
+        breakoutUp,
+        (series.aroonUp[i] ?? 0) >= aroonSpikeMin,
+        (series.aroonDown[i] ?? 100) <= aroonConflictMax,
+        close > series.vwap[i] && series.supertrendTrend[i] === 1,
+        atrExpanding,
+        volumeConfirmed,
+      ];
+      if (passesChecks(profile, longChecks, [1, 2, 4], longChecks.length, 5)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(60, longChecks),
+          reason: "Initial-balance breakout with morning momentum confirmation",
+          stopLoss: Math.min(series.vwap[i] - atrNow * rule.engine.stopAtrMult, ibHigh - atrNow * 0.6),
+          trailingMode: "SUPERTREND",
+        };
+      }
+
+      const shortChecks = [
+        higherBearish,
+        breakoutDown,
+        (series.aroonDown[i] ?? 0) >= aroonSpikeMin,
+        (series.aroonUp[i] ?? 100) <= aroonConflictMax,
+        close < series.vwap[i] && series.supertrendTrend[i] === -1,
+        atrExpanding,
+        volumeConfirmed,
+      ];
+      if (passesChecks(profile, shortChecks, [1, 2, 4], shortChecks.length, 5)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(60, shortChecks),
+          reason: "Initial-balance breakdown with morning momentum confirmation",
+          stopLoss: Math.max(series.vwap[i] + atrNow * rule.engine.stopAtrMult, ibLow + atrNow * 0.6),
+          trailingMode: "SUPERTREND",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "ib_expansion_confluence_missing" };
+    }
+    case "pcr_capitulation_reversal": {
+      const snapshot = series.snapshotsAligned[i];
+      if (!snapshot?.pcr) {
+        return { candidate: null, rejectionReason: "missing_pcr_data" };
+      }
+      const pcrCapLow = adjusted(profile, rule.engine.params.pcrCapitulationLow ?? 0.62, 0.68);
+      const pcrCapHigh = adjusted(profile, rule.engine.params.pcrCapitulationHigh ?? 1.48, 1.4);
+      const mfiOversold = adjusted(profile, rule.engine.params.mfiOversold ?? 20, 25);
+      const mfiOverbought = adjusted(profile, rule.engine.params.mfiOverbought ?? 80, 75);
+      const mfiRecovery = Math.max(2, rule.engine.params.mfiRecovery ?? 3);
+      const divLookback = Math.max(10, Math.round(rule.engine.params.divergenceLookback ?? 18));
+      const oi = series.oiAligned[i];
+      const pcr = snapshot.pcr;
+      const lowerBand = series.bollingerLower[i] ?? close;
+      const upperBand = series.bollingerUpper[i] ?? close;
+
+      const bearishPressure =
+        oi != null
+          ? oi.shortOiChange >= oi.longOiChange
+          : (snapshot.sellQty ?? 0) >= (snapshot.buyQty ?? 0);
+      const bullishPressure =
+        oi != null
+          ? oi.longOiChange >= oi.shortOiChange
+          : (snapshot.buyQty ?? 0) >= (snapshot.sellQty ?? 0);
+
+      const longChecks = [
+        pcr <= pcrCapLow,
+        low <= lowerBand && close > lowerBand,
+        (series.mfi14[i] ?? 50) >= mfiOversold + mfiRecovery &&
+          (series.mfi14[i - 1] ?? 50) <= mfiOversold + mfiRecovery,
+        bullishDivergence(series.low, series.mfi14, i, divLookback),
+        bearishPressure,
+        macdHistNow > macdHistPrev,
+      ];
+      if (passesChecks(profile, longChecks, [0, 1], longChecks.length, 4)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(57, longChecks),
+          reason: "Capitulation fade with band re-entry and MFI recovery",
+          stopLoss: lowest(series.low, i, 8) - atrNow * 0.35,
+          trailingMode: "EMA21",
+        };
+      }
+
+      const shortChecks = [
+        pcr >= pcrCapHigh,
+        high >= upperBand && close < upperBand,
+        (series.mfi14[i] ?? 50) <= mfiOverbought - mfiRecovery &&
+          (series.mfi14[i - 1] ?? 50) >= mfiOverbought - mfiRecovery,
+        bearishDivergence(series.high, series.mfi14, i, divLookback),
+        bullishPressure,
+        macdHistNow < macdHistPrev,
+      ];
+      if (passesChecks(profile, shortChecks, [0, 1], shortChecks.length, 4)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(57, shortChecks),
+          reason: "Euphoria fade with band re-entry and MFI rollover",
+          stopLoss: highest(series.high, i, 8) + atrNow * 0.35,
+          trailingMode: "EMA21",
+        };
+      }
+
+      return { candidate: null, rejectionReason: "pcr_capitulation_confluence_missing" };
+    }
+    case "channel_adx_oi_breakout": {
+      const lookbackBars = Math.max(6, Math.round(rule.engine.params.channelLookbackBars ?? 9));
+      const minAdx = adjusted(profile, rule.engine.params.minAdx ?? 28, 24);
+      const oiSkewMin = adjusted(profile, rule.engine.params.oiSkewMin ?? 0.05, 0.02);
+      const breakoutVolumeMult = adjusted(profile, rule.engine.params.breakoutVolumeMult ?? 1.1, 1.02);
+      const channelHigh = highest(series.high, i - 1, lookbackBars);
+      const channelLow = lowest(series.low, i - 1, lookbackBars);
+      const breakoutUp = close > channelHigh;
+      const breakoutDown = close < channelLow;
+      const adxTrend = adxNow >= minAdx && adxNow > adxPrev;
+      const snapshot = series.snapshotsAligned[i];
+      const oi = series.oiAligned[i];
+      const shortOiDominance =
+        oi != null
+          ? oi.shortOiChange > oi.longOiChange * (1 + oiSkewMin)
+          : (snapshot?.sellQty ?? 0) > (snapshot?.buyQty ?? 0);
+      const longOiDominance =
+        oi != null
+          ? oi.longOiChange > oi.shortOiChange * (1 + oiSkewMin)
+          : (snapshot?.buyQty ?? 0) > (snapshot?.sellQty ?? 0);
+      const volumeConfirmed = (series.volume[i] ?? 0) >= (series.volumeSma20[i] ?? 0) * breakoutVolumeMult;
+
+      const longChecks = [
+        higherBullish,
+        breakoutUp,
+        adxTrend,
+        shortOiDominance,
+        close > series.vwap[i],
+        volumeConfirmed,
+      ];
+      if (passesChecks(profile, longChecks, [1, 2], longChecks.length, 4)) {
+        return {
+          direction: "LONG",
+          confidence: confidenceFromChecks(60, longChecks),
+          reason: "Channel breakout with ADX and OI participation",
+          stopLoss: Math.min((channelHigh + channelLow) / 2 - atrNow * 0.2, close - atrNow),
+          trailingMode: "EMA9",
+          validateWithinBars: 3,
+          postEntryAdxMin: Math.max(18, minAdx - 4),
+        };
+      }
+
+      const shortChecks = [
+        higherBearish,
+        breakoutDown,
+        adxTrend,
+        longOiDominance,
+        close < series.vwap[i],
+        volumeConfirmed,
+      ];
+      if (passesChecks(profile, shortChecks, [1, 2], shortChecks.length, 4)) {
+        return {
+          direction: "SHORT",
+          confidence: confidenceFromChecks(60, shortChecks),
+          reason: "Channel breakdown with ADX and OI participation",
+          stopLoss: Math.max((channelHigh + channelLow) / 2 + atrNow * 0.2, close + atrNow),
+          trailingMode: "EMA9",
+          validateWithinBars: 3,
+          postEntryAdxMin: Math.max(18, minAdx - 4),
+        };
+      }
+
+      return { candidate: null, rejectionReason: "channel_adx_oi_confluence_missing" };
+    }
     default:
       return { candidate: null, rejectionReason: "unsupported_strategy" };
   }
@@ -1073,6 +1363,18 @@ function simulateStrategy(
             : candle.close > series.vwap[i];
         if (failedReclaim && i > active.entryIndex + 1) {
           trades.push(finalizeTrade(active, i, candle.close, "VWAP reclaim/rejection failed", series));
+          active = null;
+          lastExitIndex = i;
+          continue;
+        }
+      }
+
+      if (active.strategyId === "kumo_volumetric_breakout" && i <= active.entryIndex + 3) {
+        const cloudTop = Math.max(series.ichimokuSpanA[i] ?? candle.close, series.ichimokuSpanB[i] ?? candle.close);
+        const cloudBottom = Math.min(series.ichimokuSpanA[i] ?? candle.close, series.ichimokuSpanB[i] ?? candle.close);
+        const insideCloud = candle.close <= cloudTop && candle.close >= cloudBottom;
+        if (insideCloud) {
+          trades.push(finalizeTrade(active, i, candle.close, "Kumo re-entry invalidation", series));
           active = null;
           lastExitIndex = i;
           continue;
@@ -1248,21 +1550,37 @@ function qualityBonus(quality: StrategyRuleSpec["qualityRating"]): number {
   return 0.8;
 }
 
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function rangeDays(fromIso: string, toIso: string): number {
+  const from = toMs(fromIso);
+  const to = toMs(toIso);
+  const diff = to - from;
+  if (!Number.isFinite(diff) || diff <= 0) return 1;
+  return Math.max(1, diff / (24 * 60 * 60 * 1000));
+}
+
 export function computeEvaluationScore(
   kpis: StrategyKpis,
   quality: StrategyRuleSpec["qualityRating"]
 ): number {
+  const cappedProfitFactor = Math.min(4, kpis.profitFactor);
+  const cappedSharpe = Math.min(3, Math.max(-3, kpis.sharpeLike));
   const scoreRaw =
-    kpis.netR * 8 +
-    (kpis.winRate / 100) * 20 +
-    kpis.profitFactor * 6 +
-    kpis.expectancyR * 12 +
-    kpis.sharpeLike * 4 -
-    kpis.maxDrawdownR * 5 +
+    kpis.netR * 6 +
+    (kpis.winRate / 100) * 16 +
+    cappedProfitFactor * 5 +
+    kpis.expectancyR * 10 +
+    cappedSharpe * 4 -
+    kpis.maxDrawdownR * 6 +
     qualityBonus(quality);
-  let score = scoreRaw;
-  if (kpis.trades < 3) score -= 6;
-  if (kpis.trades > 25) score += 2;
+  const sampleConfidence = clamp(kpis.trades / 14, 0, 1);
+  let score = scoreRaw * (0.45 + sampleConfidence * 0.55);
+  if (kpis.trades < 3) score -= 10;
+  else if (kpis.trades < 6) score -= 4;
+  if (kpis.trades > 40) score += 2;
   return round2(score);
 }
 
@@ -1327,6 +1645,132 @@ function computeConsistency(
   };
 }
 
+function computeReliabilityScore(
+  kpis: StrategyKpis,
+  windows: RollingWindowEvaluation[],
+  fromIso: string,
+  toIso: string
+): number {
+  const days = rangeDays(fromIso, toIso);
+  const tradesPerDay = kpis.trades / days;
+  let densityScore = 0;
+  if (tradesPerDay <= 0.5) {
+    densityScore = (tradesPerDay / 0.5) * 25;
+  } else if (tradesPerDay <= 3) {
+    densityScore = 25 + ((tradesPerDay - 0.5) / 2.5) * 55;
+  } else if (tradesPerDay <= 6) {
+    densityScore = 80 + ((tradesPerDay - 3) / 3) * 15;
+  } else if (tradesPerDay <= 10) {
+    densityScore = 95 - ((tradesPerDay - 6) / 4) * 25;
+  } else {
+    densityScore = Math.max(35, 70 - (tradesPerDay - 10) * 3);
+  }
+  densityScore = clamp(densityScore, 0, 100);
+
+  const windowsWithTrades = windows.filter((windowItem) => windowItem.kpis.trades > 0).length;
+  const coverageScore =
+    windows.length > 0 ? (windowsWithTrades / windows.length) * 100 : kpis.trades > 0 ? 100 : 0;
+  const sampleScore = clamp(kpis.trades * 4, 0, 100);
+  const drawdownGuard = clamp(100 - kpis.maxDrawdownR * 12, 0, 100);
+
+  let reliability =
+    densityScore * 0.35 +
+    coverageScore * 0.3 +
+    sampleScore * 0.2 +
+    drawdownGuard * 0.15;
+
+  if (kpis.trades < 3) reliability *= 0.5;
+  else if (kpis.trades < 6) reliability *= 0.75;
+
+  return round2(clamp(reliability, 0, 100));
+}
+
+function entryOverlapPct(aTrades: SimulatedTrade[], bTrades: SimulatedTrade[]): number {
+  if (!aTrades.length || !bTrades.length) return 0;
+  const aKeys = new Set(aTrades.map((trade) => `${trade.entryTime.slice(0, 16)}|${trade.direction}`));
+  const bKeys = new Set(bTrades.map((trade) => `${trade.entryTime.slice(0, 16)}|${trade.direction}`));
+  const [small, large] = aKeys.size <= bKeys.size ? [aKeys, bKeys] : [bKeys, aKeys];
+  let shared = 0;
+  for (const key of small) {
+    if (large.has(key)) shared += 1;
+  }
+  return round2((shared / Math.max(1, small.size)) * 100);
+}
+
+function directionAgreementPct(aTrades: SimulatedTrade[], bTrades: SimulatedTrade[]): number {
+  if (!aTrades.length || !bTrades.length) return 0;
+  const aLong = aTrades.filter((trade) => trade.direction === "LONG").length / aTrades.length;
+  const bLong = bTrades.filter((trade) => trade.direction === "LONG").length / bTrades.length;
+  return round2(clamp((1 - Math.abs(aLong - bLong)) * 100, 0, 100));
+}
+
+function tradeCountSimilarityPct(aCount: number, bCount: number): number {
+  if (aCount === 0 && bCount === 0) return 0;
+  const maxCount = Math.max(1, aCount, bCount);
+  const diff = Math.abs(aCount - bCount);
+  return round2(clamp((1 - diff / maxCount) * 100, 0, 100));
+}
+
+function pearson(valuesA: number[], valuesB: number[]): number {
+  if (valuesA.length !== valuesB.length || valuesA.length < 2) return 0;
+  const meanA = valuesA.reduce((sum, value) => sum + value, 0) / valuesA.length;
+  const meanB = valuesB.reduce((sum, value) => sum + value, 0) / valuesB.length;
+  let cov = 0;
+  let varA = 0;
+  let varB = 0;
+  for (let i = 0; i < valuesA.length; i++) {
+    const da = valuesA[i] - meanA;
+    const db = valuesB[i] - meanB;
+    cov += da * db;
+    varA += da * da;
+    varB += db * db;
+  }
+  if (varA <= 0 || varB <= 0) return 0;
+  return clamp(cov / Math.sqrt(varA * varB), -1, 1);
+}
+
+function netRCorrelationPct(aTrades: SimulatedTrade[], bTrades: SimulatedTrade[]): number {
+  if (!aTrades.length || !bTrades.length) return 0;
+  const aDaily = new Map<string, number>();
+  const bDaily = new Map<string, number>();
+  for (const trade of aTrades) {
+    const key = dateKey(trade.entryTime);
+    aDaily.set(key, (aDaily.get(key) ?? 0) + trade.pnlR);
+  }
+  for (const trade of bTrades) {
+    const key = dateKey(trade.entryTime);
+    bDaily.set(key, (bDaily.get(key) ?? 0) + trade.pnlR);
+  }
+  const keys = Array.from(new Set([...aDaily.keys(), ...bDaily.keys()])).sort();
+  if (keys.length < 2) return 50;
+  const seriesA = keys.map((key) => aDaily.get(key) ?? 0);
+  const seriesB = keys.map((key) => bDaily.get(key) ?? 0);
+  const corr = pearson(seriesA, seriesB);
+  return round2(((corr + 1) / 2) * 100);
+}
+
+function buildSimilarityReasons(pair: {
+  entryOverlapPct: number;
+  directionAgreementPct: number;
+  tradeCountSimilarityPct: number;
+  netRCorrelationPct: number;
+}): string[] {
+  const reasons: string[] = [];
+  if (pair.entryOverlapPct >= 70) reasons.push("entry_time_overlap");
+  if (pair.directionAgreementPct >= 85) reasons.push("directional_alignment");
+  if (pair.tradeCountSimilarityPct >= 85) reasons.push("trade_frequency_match");
+  if (pair.netRCorrelationPct >= 75) reasons.push("daily_netr_correlation");
+  if (!reasons.length) reasons.push("multi_factor_overlap");
+  return reasons;
+}
+
+function duplicatePenaltyFromSimilarity(maxSimilarity: number, nearDuplicateCount: number): number {
+  if (maxSimilarity < DUPLICATE_SIMILARITY_THRESHOLD) return 0;
+  const penaltyRaw =
+    (maxSimilarity - DUPLICATE_SIMILARITY_THRESHOLD) * 0.32 + nearDuplicateCount * 0.9;
+  return round2(clamp(penaltyRaw, 0, 12));
+}
+
 export function evaluateStrategyForSegment(
   strategyId: StrategyId,
   segment: SegmentId,
@@ -1361,7 +1805,12 @@ export function evaluateStrategyForSegment(
     rule.qualityRating
   );
   const consistency = computeConsistency(rollingWindows);
-  const finalScore = round2(baseScore * 0.45 + consistency.consistencyScore * 0.55);
+  const activeFrom = options?.fromIso ?? fallbackFrom;
+  const activeTo = options?.toIso ?? fallbackTo;
+  const reliabilityScore = computeReliabilityScore(kpis, rollingWindows, activeFrom, activeTo);
+  const finalScore = round2(
+    baseScore * 0.4 + consistency.consistencyScore * 0.38 + reliabilityScore * 0.22
+  );
 
   return {
     strategyId: rule.id,
@@ -1372,11 +1821,176 @@ export function evaluateStrategyForSegment(
     kpis,
     baseScore,
     consistencyScore: consistency.consistencyScore,
+    reliabilityScore,
+    duplicatePenalty: 0,
+    duplicateRisk: 0,
+    scoreBreakdown: {
+      baseScore: round2(baseScore),
+      consistencyScore: round2(consistency.consistencyScore),
+      reliabilityScore: round2(reliabilityScore),
+      duplicatePenalty: 0,
+      finalScore,
+    },
     score: finalScore,
     activity: simulation.activity,
     rollingWindows,
     consistency,
     trades,
+  };
+}
+
+function buildDuplicatePairsForSegment(
+  evaluations: StrategyEvaluation[]
+): StrategyDuplicatePair[] {
+  const pairs: StrategyDuplicatePair[] = [];
+  for (let i = 0; i < evaluations.length; i++) {
+    for (let j = i + 1; j < evaluations.length; j++) {
+      const a = evaluations[i];
+      const b = evaluations[j];
+      const overlap = entryOverlapPct(a.trades, b.trades);
+      const direction = directionAgreementPct(a.trades, b.trades);
+      const tradeCount = tradeCountSimilarityPct(a.kpis.trades, b.kpis.trades);
+      const correlation = netRCorrelationPct(a.trades, b.trades);
+      const similarity = round2(
+        overlap * 0.45 + direction * 0.2 + tradeCount * 0.2 + correlation * 0.15
+      );
+      pairs.push({
+        segment: a.segment,
+        strategyAId: a.strategyId,
+        strategyAName: a.strategyName,
+        strategyBId: b.strategyId,
+        strategyBName: b.strategyName,
+        similarity,
+        entryOverlapPct: overlap,
+        directionAgreementPct: direction,
+        tradeCountSimilarityPct: tradeCount,
+        netRCorrelationPct: correlation,
+        reasons: buildSimilarityReasons({
+          entryOverlapPct: overlap,
+          directionAgreementPct: direction,
+          tradeCountSimilarityPct: tradeCount,
+          netRCorrelationPct: correlation,
+        }),
+      });
+    }
+  }
+  return pairs.sort((a, b) => b.similarity - a.similarity);
+}
+
+export function applyDuplicatePenaltiesForSegment(evaluations: StrategyEvaluation[]): {
+  evaluations: StrategyEvaluation[];
+  pairs: StrategyDuplicatePair[];
+  summaries: StrategyDuplicateSummary[];
+  threshold: number;
+} {
+  if (!evaluations.length) {
+    return {
+      evaluations: [],
+      pairs: [],
+      summaries: [],
+      threshold: DUPLICATE_SIMILARITY_THRESHOLD,
+    };
+  }
+  const pairs = buildDuplicatePairsForSegment(evaluations);
+  const relatedByStrategy = new Map<string, StrategyDuplicatePair[]>();
+  for (const pair of pairs) {
+    const aKey = `${pair.segment}::${pair.strategyAId}`;
+    const bKey = `${pair.segment}::${pair.strategyBId}`;
+    if (!relatedByStrategy.has(aKey)) relatedByStrategy.set(aKey, []);
+    if (!relatedByStrategy.has(bKey)) relatedByStrategy.set(bKey, []);
+    relatedByStrategy.get(aKey)!.push(pair);
+    relatedByStrategy.get(bKey)!.push(pair);
+  }
+
+  const summaries: StrategyDuplicateSummary[] = [];
+  const adjusted = evaluations.map((evaluation) => {
+    const key = `${evaluation.segment}::${evaluation.strategyId}`;
+    const related = relatedByStrategy.get(key) ?? [];
+    const similarities = related.map((pair) => pair.similarity);
+    const maxSimilarity = similarities.length ? Math.max(...similarities) : 0;
+    const avgSimilarity =
+      similarities.length > 0
+        ? similarities.reduce((sum, value) => sum + value, 0) / similarities.length
+        : 0;
+    const nearDuplicateCount = similarities.filter(
+      (value) => value >= DUPLICATE_SIMILARITY_THRESHOLD
+    ).length;
+    const duplicatePenalty = duplicatePenaltyFromSimilarity(maxSimilarity, nearDuplicateCount);
+    const adjustedScore = round2(evaluation.score - duplicatePenalty);
+
+    summaries.push({
+      segment: evaluation.segment,
+      strategyId: evaluation.strategyId,
+      strategyName: evaluation.strategyName,
+      maxSimilarity: round2(maxSimilarity),
+      averageSimilarity: round2(avgSimilarity),
+      nearDuplicateCount,
+      duplicatePenalty,
+    });
+
+    return {
+      ...evaluation,
+      duplicateRisk: round2(maxSimilarity),
+      duplicatePenalty,
+      score: adjustedScore,
+      scoreBreakdown: {
+        ...evaluation.scoreBreakdown,
+        duplicatePenalty,
+        finalScore: adjustedScore,
+      },
+    };
+  });
+
+  return {
+    evaluations: adjusted.sort((a, b) => b.score - a.score),
+    pairs,
+    summaries: summaries.sort((a, b) => b.maxSimilarity - a.maxSimilarity),
+    threshold: DUPLICATE_SIMILARITY_THRESHOLD,
+  };
+}
+
+export interface SegmentEvaluationResult {
+  evaluations: StrategyEvaluation[];
+  duplicatePairs: StrategyDuplicatePair[];
+  duplicateSummaries: StrategyDuplicateSummary[];
+  duplicateThreshold: number;
+}
+
+export function evaluateStrategiesForSegmentDetailed(params: {
+  segment: SegmentId;
+  strategyIds?: StrategyId[];
+  candlesOneMinute: LabCandle[];
+  snapshots: LabSnapshot[];
+  oiPoints: LabOIBuildupPoint[];
+  profile?: ExecutionProfile;
+  fromIso?: string;
+  toIso?: string;
+}): SegmentEvaluationResult {
+  const selected =
+    params.strategyIds && params.strategyIds.length > 0
+      ? STRATEGY_LAB_RULES.filter((rule) => params.strategyIds?.includes(rule.id))
+      : STRATEGY_LAB_RULES;
+
+  const rawEvaluations = selected.map((rule) =>
+    evaluateStrategyForSegment(
+      rule.id,
+      params.segment,
+      params.candlesOneMinute,
+      params.snapshots,
+      params.oiPoints,
+      {
+        profile: params.profile ?? "balanced",
+        fromIso: params.fromIso,
+        toIso: params.toIso,
+      }
+    )
+  );
+  const duplicateAnalysis = applyDuplicatePenaltiesForSegment(rawEvaluations);
+  return {
+    evaluations: duplicateAnalysis.evaluations,
+    duplicatePairs: duplicateAnalysis.pairs,
+    duplicateSummaries: duplicateAnalysis.summaries,
+    duplicateThreshold: duplicateAnalysis.threshold,
   };
 }
 
@@ -1390,25 +2004,5 @@ export function evaluateStrategiesForSegment(params: {
   fromIso?: string;
   toIso?: string;
 }): StrategyEvaluation[] {
-  const selected =
-    params.strategyIds && params.strategyIds.length > 0
-      ? STRATEGY_LAB_RULES.filter((rule) => params.strategyIds?.includes(rule.id))
-      : STRATEGY_LAB_RULES;
-
-  return selected
-    .map((rule) =>
-      evaluateStrategyForSegment(
-        rule.id,
-        params.segment,
-        params.candlesOneMinute,
-        params.snapshots,
-        params.oiPoints,
-        {
-          profile: params.profile ?? "balanced",
-          fromIso: params.fromIso,
-          toIso: params.toIso,
-        }
-      )
-    )
-    .sort((a, b) => b.score - a.score);
+  return evaluateStrategiesForSegmentDetailed(params).evaluations;
 }

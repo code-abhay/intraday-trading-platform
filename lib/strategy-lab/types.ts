@@ -9,7 +9,11 @@ export type StrategyId =
   | "rsi_divergence_stochastic_reversal"
   | "sar_vwap_opening_drive"
   | "stochastic_macd_range_crossover"
-  | "fib_orderflow_continuation";
+  | "fib_orderflow_continuation"
+  | "kumo_volumetric_breakout"
+  | "ib_volatility_expansion"
+  | "pcr_capitulation_reversal"
+  | "channel_adx_oi_breakout";
 
 export type TradeDirection = "LONG" | "SHORT";
 export type TradeOutcome = "WIN" | "LOSS" | "SCRATCH";
@@ -141,6 +145,44 @@ export interface StrategyConsistencyMetrics {
   consistencyScore: number;
 }
 
+export interface StrategyScoreBreakdown {
+  baseScore: number;
+  consistencyScore: number;
+  reliabilityScore: number;
+  duplicatePenalty: number;
+  finalScore: number;
+}
+
+export interface StrategyDuplicatePair {
+  segment: SegmentId;
+  strategyAId: StrategyId;
+  strategyAName: string;
+  strategyBId: StrategyId;
+  strategyBName: string;
+  similarity: number;
+  entryOverlapPct: number;
+  directionAgreementPct: number;
+  tradeCountSimilarityPct: number;
+  netRCorrelationPct: number;
+  reasons: string[];
+}
+
+export interface StrategyDuplicateSummary {
+  segment: SegmentId;
+  strategyId: StrategyId;
+  strategyName: string;
+  maxSimilarity: number;
+  averageSimilarity: number;
+  nearDuplicateCount: number;
+  duplicatePenalty: number;
+}
+
+export interface StrategyDuplicateDiagnostics {
+  threshold: number;
+  pairs: StrategyDuplicatePair[];
+  summaries: StrategyDuplicateSummary[];
+}
+
 export interface StrategyEvaluation {
   strategyId: StrategyId;
   strategyName: string;
@@ -150,6 +192,10 @@ export interface StrategyEvaluation {
   profile: ExecutionProfile;
   baseScore: number;
   consistencyScore: number;
+  reliabilityScore: number;
+  duplicatePenalty: number;
+  duplicateRisk: number;
+  scoreBreakdown: StrategyScoreBreakdown;
   score: number;
   activity: StrategyActivityDiagnostics;
   rollingWindows: RollingWindowEvaluation[];
@@ -184,6 +230,7 @@ export interface StrategyLabApiResponse {
   status?: StrategyLabRunStatus;
   segments: SegmentStrategySummary[];
   overallRanking: StrategyEvaluation[];
+  duplicateDiagnostics: StrategyDuplicateDiagnostics;
   warnings: string[];
 }
 
