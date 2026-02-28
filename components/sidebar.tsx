@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   Activity,
   BarChart3,
+  Cpu,
   FlaskConical,
   LayoutDashboard,
   LineChart,
@@ -26,6 +27,7 @@ const navItems = [
   { href: "/intraday-sheet", label: "Intraday Sheet", icon: Activity },
   { href: "/nifty-50", label: "Nifty 50", icon: BarChart3 },
   { href: "/strategy-lab", label: "Strategy Lab", icon: FlaskConical },
+  { href: "/quant-lab", label: "Quant Lab", icon: Cpu },
   { href: "/paper-trade", label: "Paper Trade", icon: LineChart },
   { href: "/login", label: "Angel One", icon: Link2 },
 ];

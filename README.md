@@ -62,6 +62,20 @@ Key endpoints:
 
 ---
 
+## Quant Lab (New Internal Module)
+
+The app now includes a dedicated in-project module at `/quant-lab` for building the hedge-fund-style architecture in phased, non-disruptive steps.
+
+- Route: `/quant-lab`
+- Sidebar entry: **Quant Lab**
+- API namespace: `/api/quant-lab/*` (scaffold contracts)
+- Core docs:
+  - `docs/QUANT_LAB_MASTER_BLUEPRINT.md`
+  - `docs/QUANT_LAB_PART7_PORTFOLIO_ENGINE.md`
+  - `docs/QUANT_LAB_IMPLEMENTATION_BACKLOG.md`
+
+---
+
 ## Getting Started
 
 First, run the development server:
